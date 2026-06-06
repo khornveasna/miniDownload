@@ -151,6 +151,7 @@ class DownloadWorker(QRunnable):
 class MiniDownloadPro(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.is_dark_mode = True
         self.thread_pool = QThreadPool()
         self.active_workers = {}
         self.initUI()
@@ -158,7 +159,8 @@ class MiniDownloadPro(QMainWindow):
     def initUI(self):
         self.setWindowTitle("Mini Download 5.4.1 (Pro Free Version)")
         self.resize(1000, 750)
-        self.setStyleSheet("""
+        
+        self.dark_stylesheet = """
             QMainWindow {
                 background-color: #1A1A1A;
             }
@@ -169,6 +171,11 @@ class MiniDownloadPro(QMainWindow):
             QLabel {
                 font-size: 13px;
                 font-weight: bold;
+            }
+            QLabel#titleLabel {
+                font-size: 20px;
+                font-weight: bold;
+                color: #42A85F;
             }
             QGroupBox {
                 border: 1px solid #333333;
@@ -225,6 +232,83 @@ class MiniDownloadPro(QMainWindow):
             QPushButton#stopBtn:hover {
                 background-color: #C04040;
             }
+            QPushButton#settingsBtn, QPushButton#helpBtn {
+                background-color: transparent;
+                border: none;
+                color: #FFFFFF;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 4px 8px;
+            }
+            QPushButton#settingsBtn:hover, QPushButton#helpBtn:hover {
+                color: #42A85F;
+            }
+            QPushButton#themeBtn {
+                background-color: transparent;
+                border: 1px solid #444444;
+                border-radius: 13px;
+                min-width: 26px;
+                max-width: 26px;
+                min-height: 26px;
+                max-height: 26px;
+                font-size: 13px;
+                color: #FFB300;
+                padding: 0px;
+            }
+            QPushButton#themeBtn:hover {
+                background-color: #2D2D2D;
+                border-color: #FFB300;
+            }
+            QPushButton#minBtn {
+                background-color: #FFB020;
+                color: #1A1A1A;
+                border: none;
+                border-radius: 9px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 0px;
+            }
+            QPushButton#minBtn:hover {
+                background-color: #FFC040;
+            }
+            QPushButton#maxBtn {
+                background-color: #2DCA73;
+                color: #1A1A1A;
+                border: none;
+                border-radius: 9px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
+                font-weight: bold;
+                font-size: 10px;
+                padding: 0px;
+                margin-bottom: 1px;
+            }
+            QPushButton#maxBtn:hover {
+                background-color: #3DDA83;
+            }
+            QPushButton#closeBtn {
+                background-color: #FF5F56;
+                color: #1A1A1A;
+                border: none;
+                border-radius: 9px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 0px;
+                margin-bottom: 1px;
+            }
+            QPushButton#closeBtn:hover {
+                background-color: #FF7F76;
+            }
             QComboBox, QSpinBox {
                 background-color: #242424;
                 border: 1px solid #3A3A3A;
@@ -274,79 +358,108 @@ class MiniDownloadPro(QMainWindow):
                 background-color: #2D8B4E;
                 border-radius: 5px;
             }
-        """)
-
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(10)
-
-        # Header Row
-        header_layout = QHBoxLayout()
-        title_label = QLabel("Mini Download 5.4.1")
-        title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #42A85F;")
-        header_layout.addWidget(title_label)
-        header_layout.addStretch()
+        """
         
-        # Settings button with icon
-        settings_btn = QPushButton("⚙️ Settings")
-        settings_btn.setStyleSheet("""
+        self.light_stylesheet = """
+            QMainWindow {
+                background-color: #F3F3F3;
+            }
+            QWidget {
+                color: #1A1A1A;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            QLabel {
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QLabel#titleLabel {
+                font-size: 20px;
+                font-weight: bold;
+                color: #2D8B4E;
+            }
+            QGroupBox {
+                border: 1px solid #CCCCCC;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 15px;
+                font-weight: bold;
+                color: #2D8B4E;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+            QLineEdit, QPlainTextEdit {
+                background-color: #FFFFFF;
+                border: 1px solid #CCCCCC;
+                border-radius: 6px;
+                padding: 8px;
+                color: #1A1A1A;
+                font-size: 13px;
+            }
+            QLineEdit:focus, QPlainTextEdit:focus {
+                border: 1px solid #2D8B4E;
+            }
             QPushButton {
+                background-color: #EAEAEA;
+                color: #1A1A1A;
+                border: 1px solid #CCCCCC;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #DFDFDF;
+                border: 1px solid #2D8B4E;
+            }
+            QPushButton#downloadBtn {
+                background-color: #2D8B4E;
+                color: white;
+                border: none;
+                font-size: 14px;
+            }
+            QPushButton#downloadBtn:hover {
+                background-color: #38A05D;
+            }
+            QPushButton#stopBtn {
+                background-color: #A83232;
+                color: white;
+                border: none;
+                font-size: 14px;
+            }
+            QPushButton#stopBtn:hover {
+                background-color: #C04040;
+            }
+            QPushButton#settingsBtn, QPushButton#helpBtn {
                 background-color: transparent;
                 border: none;
-                color: #FFFFFF;
+                color: #1A1A1A;
                 font-weight: bold;
                 font-size: 13px;
                 padding: 4px 8px;
             }
-            QPushButton:hover {
-                color: #42A85F;
+            QPushButton#settingsBtn:hover, QPushButton#helpBtn:hover {
+                color: #2D8B4E;
             }
-        """)
-        
-        # Help button with icon and dropdown indicator
-        help_btn = QPushButton("❓ Help  ▾")
-        help_btn.setStyleSheet("""
-            QPushButton {
+            QPushButton#themeBtn {
                 background-color: transparent;
-                border: none;
-                color: #FFFFFF;
-                font-weight: bold;
-                font-size: 13px;
-                padding: 4px 8px;
-            }
-            QPushButton:hover {
-                color: #42A85F;
-            }
-        """)
-        
-        # Theme/Sun circular button
-        theme_btn = QPushButton("☀️")
-        theme_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid #444444;
+                border: 1px solid #CCCCCC;
                 border-radius: 13px;
                 min-width: 26px;
                 max-width: 26px;
                 min-height: 26px;
                 max-height: 26px;
                 font-size: 13px;
-                color: #FFB300;
+                color: #FF8F00;
                 padding: 0px;
             }
-            QPushButton:hover {
-                background-color: #2D2D2D;
-                border-color: #FFB300;
+            QPushButton#themeBtn:hover {
+                background-color: #EAEAEA;
+                border-color: #FF8F00;
             }
-        """)
-        
-        # Minimize circular button
-        min_btn = QPushButton("-")
-        min_btn.clicked.connect(self.showMinimized)
-        min_btn.setStyleSheet("""
-            QPushButton {
+            QPushButton#minBtn {
                 background-color: #FFB020;
                 color: #1A1A1A;
                 border: none;
@@ -359,16 +472,10 @@ class MiniDownloadPro(QMainWindow):
                 font-size: 12px;
                 padding: 0px;
             }
-            QPushButton:hover {
+            QPushButton#minBtn:hover {
                 background-color: #FFC040;
             }
-        """)
-        
-        # Maximize circular button
-        max_btn = QPushButton("□")
-        max_btn.clicked.connect(self.toggle_maximize)
-        max_btn.setStyleSheet("""
-            QPushButton {
+            QPushButton#maxBtn {
                 background-color: #2DCA73;
                 color: #1A1A1A;
                 border: none;
@@ -382,16 +489,10 @@ class MiniDownloadPro(QMainWindow):
                 padding: 0px;
                 margin-bottom: 1px;
             }
-            QPushButton:hover {
+            QPushButton#maxBtn:hover {
                 background-color: #3DDA83;
             }
-        """)
-        
-        # Close circular button
-        close_btn = QPushButton("x")
-        close_btn.clicked.connect(self.close)
-        close_btn.setStyleSheet("""
-            QPushButton {
+            QPushButton#closeBtn {
                 background-color: #FF5F56;
                 color: #1A1A1A;
                 border: none;
@@ -405,14 +506,106 @@ class MiniDownloadPro(QMainWindow):
                 padding: 0px;
                 margin-bottom: 1px;
             }
-            QPushButton:hover {
+            QPushButton#closeBtn:hover {
                 background-color: #FF7F76;
             }
-        """)
+            QComboBox, QSpinBox {
+                background-color: #FFFFFF;
+                border: 1px solid #CCCCCC;
+                border-radius: 6px;
+                padding: 6px;
+                color: #1A1A1A;
+            }
+            QCheckBox {
+                spacing: 5px;
+                font-weight: normal;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QCheckBox::indicator:unchecked {
+                border: 1px solid #AAAAAA;
+                background-color: #FFFFFF;
+                border-radius: 3px;
+            }
+            QCheckBox::indicator:checked {
+                border: 1px solid #2D8B4E;
+                background-color: #2D8B4E;
+                border-radius: 3px;
+            }
+            QTableWidget {
+                background-color: #FFFFFF;
+                border: 1px solid #CCCCCC;
+                gridline-color: #E5E5E5;
+                border-radius: 6px;
+            }
+            QHeaderView::section {
+                background-color: #F0F0F0;
+                padding: 6px;
+                border: 1px solid #E5E5E5;
+                color: #555555;
+                font-weight: bold;
+            }
+            QProgressBar {
+                border: 1px solid #CCCCCC;
+                border-radius: 6px;
+                text-align: center;
+                background-color: #EAEAEA;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #2D8B4E;
+                border-radius: 5px;
+            }
+        """
+
+        self.setStyleSheet(self.dark_stylesheet)
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(10)
+
+        # Header Row
+        header_layout = QHBoxLayout()
+        title_label = QLabel("Mini Download 5.4.1")
+        title_label.setObjectName("titleLabel")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        # Settings button with icon
+        settings_btn = QPushButton("⚙️ Settings")
+        settings_btn.setObjectName("settingsBtn")
+        
+        # Help button with icon and dropdown indicator
+        help_btn = QPushButton("❓ Help  ▾")
+        help_btn.setObjectName("helpBtn")
+        
+        # Theme/Sun circular button
+        self.theme_btn = QPushButton("☀️")
+        self.theme_btn.setObjectName("themeBtn")
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        
+        # Minimize circular button
+        min_btn = QPushButton("-")
+        min_btn.setObjectName("minBtn")
+        min_btn.clicked.connect(self.showMinimized)
+        
+        # Maximize circular button
+        max_btn = QPushButton("□")
+        max_btn.setObjectName("maxBtn")
+        max_btn.clicked.connect(self.toggle_maximize)
+        
+        # Close circular button
+        close_btn = QPushButton("x")
+        close_btn.setObjectName("closeBtn")
+        close_btn.clicked.connect(self.close)
         
         header_layout.addWidget(settings_btn)
         header_layout.addWidget(help_btn)
-        header_layout.addWidget(theme_btn)
+        header_layout.addWidget(self.theme_btn)
         header_layout.addWidget(min_btn)
         header_layout.addWidget(max_btn)
         header_layout.addWidget(close_btn)
@@ -614,6 +807,58 @@ class MiniDownloadPro(QMainWindow):
         else:
             self.showMaximized()
 
+    def toggle_theme(self):
+        self.is_dark_mode = not self.is_dark_mode
+        if self.is_dark_mode:
+            self.theme_btn.setText("☀️")
+            self.setStyleSheet(self.dark_stylesheet)
+        else:
+            self.theme_btn.setText("🌙")
+            self.setStyleSheet(self.light_stylesheet)
+            
+        self.update_palette()
+        
+        # Update existing items in the table to use the new default text color
+        default_text_color = '#FFFFFF' if self.is_dark_mode else '#1A1A1A'
+        for r in range(self.table.rowCount()):
+            status_item = self.table.item(r, 3)
+            if status_item:
+                status_text = status_item.text().lower()
+                if status_text not in ['done', 'failed', 'scanning'] and not status_text.startswith('downloading'):
+                    status_item.setForeground(QBrush(QColor(default_text_color)))
+
+    def update_palette(self):
+        palette = QPalette()
+        if self.is_dark_mode:
+            palette.setColor(QPalette.Window, QColor(26, 26, 26))
+            palette.setColor(QPalette.WindowText, Qt.white)
+            palette.setColor(QPalette.Base, QColor(36, 36, 36))
+            palette.setColor(QPalette.AlternateBase, QColor(26, 26, 26))
+            palette.setColor(QPalette.ToolTipBase, Qt.white)
+            palette.setColor(QPalette.ToolTipText, Qt.white)
+            palette.setColor(QPalette.Text, Qt.white)
+            palette.setColor(QPalette.Button, QColor(42, 42, 42))
+            palette.setColor(QPalette.ButtonText, Qt.white)
+            palette.setColor(QPalette.BrightText, Qt.red)
+            palette.setColor(QPalette.Link, QColor(66, 168, 95))
+            palette.setColor(QPalette.Highlight, QColor(66, 168, 95))
+            palette.setColor(QPalette.HighlightedText, Qt.black)
+        else:
+            palette.setColor(QPalette.Window, QColor(243, 243, 243))
+            palette.setColor(QPalette.WindowText, Qt.black)
+            palette.setColor(QPalette.Base, QColor(255, 255, 255))
+            palette.setColor(QPalette.AlternateBase, QColor(243, 243, 243))
+            palette.setColor(QPalette.ToolTipBase, Qt.black)
+            palette.setColor(QPalette.ToolTipText, Qt.black)
+            palette.setColor(QPalette.Text, Qt.black)
+            palette.setColor(QPalette.Button, QColor(230, 230, 230))
+            palette.setColor(QPalette.ButtonText, Qt.black)
+            palette.setColor(QPalette.BrightText, Qt.red)
+            palette.setColor(QPalette.Link, QColor(45, 139, 78))
+            palette.setColor(QPalette.Highlight, QColor(45, 139, 78))
+            palette.setColor(QPalette.HighlightedText, Qt.white)
+        QApplication.instance().setPalette(palette)
+
     def format_changed(self, index):
         self.quality_combo.setEnabled(index == 0)
 
@@ -645,8 +890,9 @@ class MiniDownloadPro(QMainWindow):
         # Disable direct cell editing
         for col, text in enumerate([filename, speed, size, status, url]):
             item = QTableWidgetItem(text)
-            if col == 3: # Status column - make it green if 'done', orange if 'Downloading'
-                item.setForeground(QBrush(QColor('#aaaaaa')))
+            if col == 3: # Status column
+                status_color = '#aaaaaa' if self.is_dark_mode else '#555555'
+                item.setForeground(QBrush(QColor(status_color)))
             item.setFlags(item.flags() ^ Qt.ItemIsEditable)
             self.table.setItem(row, col, item)
             
@@ -748,7 +994,8 @@ class MiniDownloadPro(QMainWindow):
             elif status.lower() == 'scanning':
                 self.table.item(row_idx, 3).setForeground(QBrush(QColor('#E09025')))
             else:
-                self.table.item(row_idx, 3).setForeground(QBrush(QColor('#FFFFFF')))
+                default_text_color = '#FFFFFF' if self.is_dark_mode else '#1A1A1A'
+                self.table.item(row_idx, 3).setForeground(QBrush(QColor(default_text_color)))
                 
             self.update_status_label()
 
