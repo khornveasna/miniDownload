@@ -9,6 +9,12 @@
   let lastHref = location.href;
 
   function titleForPage() {
+    const kind = siteKind();
+    if (kind === "youtube" || kind === "facebook" || kind === "tiktok") {
+      const title = document.title || "";
+      const cleanTitle = title.replace(/\s*-\s*YouTube\s*$/i, "").trim();
+      if (cleanTitle) return cleanTitle;
+    }
     const og = document.querySelector('meta[property="og:title"], meta[name="twitter:title"]');
     const title = (og && og.content) || document.title || "Mini Download";
     return title.replace(/\s*-\s*YouTube\s*$/i, "").trim() || "Mini Download";
@@ -433,6 +439,7 @@
     const kind = siteKind();
     if (kind === "youtube") return Boolean(canonicalUrl(video));
     if (kind === "facebook") return Boolean(canonicalUrl(video));
+    if (kind === "tiktok") return true;
     if (kind !== "tiktok" && kind !== "facebook" && kind !== "other") return true;
     return Boolean(canonicalUrl(video));
   }
@@ -798,6 +805,7 @@
     `;
     button.title = "Mini Download";
     document.documentElement.appendChild(button);
+    button.videoElement = video;
 
     const refreshIcon = button.querySelector(".mini-download-button-refresh");
     if (refreshIcon) {
@@ -843,17 +851,23 @@
       event.stopPropagation();
       showMenu(video, button);
     });
+
+    let hoverTarget = video;
+    if (video.parentElement && video.parentElement.tagName !== "BODY" && video.parentElement.tagName !== "HTML") {
+      hoverTarget = video.parentElement;
+    }
+
     button.addEventListener("mouseenter", show);
     button.addEventListener("mouseleave", hide);
-    video.addEventListener("mouseenter", show);
-    video.addEventListener("mousemove", show);
+    hoverTarget.addEventListener("mouseenter", show);
+    hoverTarget.addEventListener("mousemove", show);
     video.addEventListener("loadedmetadata", show);
     video.addEventListener("play", show);
     video.addEventListener("playing", show);
     video.addEventListener("timeupdate", update);
     video.addEventListener("pause", hideNow);
     video.addEventListener("ended", hideNow);
-    video.addEventListener("mouseleave", hide);
+    hoverTarget.addEventListener("mouseleave", hide);
     window.addEventListener("scroll", update, true);
     window.addEventListener("resize", update);
     const initialUrl = canonicalUrl(video);
@@ -871,7 +885,9 @@
     if (!state) return false;
     const url = canonicalUrl(video);
     const src = video.currentSrc || video.src || "";
-    if (!url || video.getBoundingClientRect().width < 120 || video.getBoundingClientRect().height < 80) {
+    const kind = siteKind();
+    const requiresUrl = kind !== "tiktok";
+    if ((requiresUrl && !url) || video.getBoundingClientRect().width < 120 || video.getBoundingClientRect().height < 80) {
       state.button.classList.remove("mini-download-visible");
       state.button.classList.remove("mini-download-dimmed");
       state.url = "";
@@ -882,7 +898,7 @@
     }
     state.url = url;
     state.src = src;
-    state.waitingForUrl = false;
+    state.waitingForUrl = !url;
     positionButton(video, state.button);
     return true;
   }
@@ -906,6 +922,13 @@
   }
 
   function scan() {
+    document.querySelectorAll("." + BUTTON_CLASS).forEach(button => {
+      const video = button.videoElement;
+      if (!video || !video.isConnected) {
+        button.remove();
+      }
+    });
+
     document.querySelectorAll("video").forEach(video => {
       if (videos.has(video)) {
         refreshVideoState(video);

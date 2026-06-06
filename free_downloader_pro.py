@@ -1,5 +1,12 @@
 import sys
 import os
+
+# Dynamic updates path for yt-dlp
+local_dir = os.path.join(os.environ.get("LOCALAPPDATA", "."), "MiniDownload")
+updates_dir = os.path.join(local_dir, "updates")
+if os.path.exists(updates_dir):
+    sys.path.insert(0, updates_dir)
+
 import threading
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -11,9 +18,10 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QGroupBox, QCheckBox, QSpinBox, QMessageBox, QAbstractItemView,
                              QSystemTrayIcon, QMenu, QAction, QStyle, QDialog, QFormLayout,
                              QFrame, QGridLayout)
-from PyQt5.QtCore import pyqtSignal, QObject, Qt, QRunnable, QThreadPool
+from PyQt5.QtCore import pyqtSignal, QObject, Qt, QRunnable, QThreadPool, QThread
 from PyQt5.QtGui import QFont, QColor, QPalette, QBrush, QIcon
 import yt_dlp
+import curl_cffi
 
 import os
 import hashlib
@@ -258,6 +266,99 @@ class WorkerSignals(QObject):
     status = pyqtSignal(int, str, str) # row_idx, filename, status
     finished = pyqtSignal(int, bool, str) # row_idx, success, message
 
+class YtdlpUpdateWorker(QThread):
+    finished = pyqtSignal(str) # Emits the new version string if downloaded successfully
+    
+    def __init__(self, current_version):
+        super().__init__()
+        self.current_version = current_version
+        
+    def run(self):
+        try:
+            import urllib.request
+            import urllib.error
+            import json
+            import tarfile
+            import io
+            import shutil
+            
+            # 1. Fetch latest version info from PyPI
+            url = "https://pypi.org/pypi/yt-dlp/json"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                latest_version = data['info']['version']
+                
+            # Compare versions (e.g. "2026.03.17" vs "2026.04.01")
+            if latest_version <= self.current_version:
+                return
+                
+            # 2. Find source package URL (.tar.gz or .zip)
+            download_url = None
+            for release in data['urls']:
+                if release['packagetype'] == 'sdist':
+                    download_url = release['url']
+                    break
+            
+            if not download_url:
+                for release in data['urls']:
+                    if release['url'].endswith('.tar.gz') or release['url'].endswith('.zip'):
+                        download_url = release['url']
+                        break
+            
+            if not download_url:
+                return
+                
+            # 3. Download the archive
+            req_dl = urllib.request.Request(download_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req_dl, timeout=30) as response_dl:
+                archive_bytes = response_dl.read()
+                
+            # 4. Set up directories
+            local_dir = os.path.join(os.environ.get("LOCALAPPDATA", "."), "MiniDownload")
+            updates_dir = os.path.join(local_dir, "updates")
+            temp_extract_dir = os.path.join(local_dir, "temp_extract")
+            
+            if os.path.exists(temp_extract_dir):
+                shutil.rmtree(temp_extract_dir)
+            os.makedirs(temp_extract_dir, exist_ok=True)
+            
+            # 5. Extract
+            if download_url.endswith('.tar.gz'):
+                with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+                    tar.extractall(path=temp_extract_dir)
+            elif download_url.endswith('.zip'):
+                import zipfile
+                with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zip_ref:
+                    zip_ref.extractall(path=temp_extract_dir)
+            
+            # 6. Locate 'yt_dlp' folder
+            extracted_yt_dlp_path = None
+            for root, dirs, files in os.walk(temp_extract_dir):
+                if os.path.basename(root) == 'yt_dlp' and '__init__.py' in files:
+                    extracted_yt_dlp_path = root
+                    break
+                    
+            if not extracted_yt_dlp_path:
+                return
+                
+            # 7. Copy to updates directory
+            if os.path.exists(updates_dir):
+                shutil.rmtree(updates_dir)
+            os.makedirs(updates_dir, exist_ok=True)
+            
+            target_path = os.path.join(updates_dir, 'yt_dlp')
+            shutil.copytree(extracted_yt_dlp_path, target_path)
+            
+            # Cleanup temp extraction
+            shutil.rmtree(temp_extract_dir)
+            
+            # Emit success signal
+            self.finished.emit(latest_version)
+            
+        except Exception as e:
+            print("Failed to auto-update yt-dlp:", e)
+
 class ScanWorker(QRunnable):
     def __init__(self, row_idx, url, signals):
         super().__init__()
@@ -367,6 +468,11 @@ class DownloadWorker(QRunnable):
             'outtmpl': os.path.join(self.save_dir, out_name),
             'progress_hooks': [self.progress_hook],
             'noprogress': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['default']
+                }
+            }
         }
 
         # Embed thumbnail/description
@@ -428,6 +534,7 @@ class DownloadInfoDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Download info")
         self.resize(600, 260)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         
         self.setStyleSheet("""
             QDialog {
@@ -511,6 +618,10 @@ class DownloadInfoDialog(QDialog):
         file_layout.addWidget(browse_btn)
         form.addRow("Saved file", file_layout)
 
+        self.remember_dir_chk = QCheckBox("Remember download location")
+        self.remember_dir_chk.setChecked(False)
+        form.addRow("", self.remember_dir_chk)
+
         self.desc_edit = QLineEdit(description)
         form.addRow("Description", self.desc_edit)
 
@@ -557,7 +668,8 @@ class DownloadInfoDialog(QDialog):
         return {
             'filepath': self.file_edit.text(),
             'description': self.desc_edit.text(),
-            'show_completed_msg': self.show_msg_chk.isChecked()
+            'show_completed_msg': self.show_msg_chk.isChecked(),
+            'remember_dir': self.remember_dir_chk.isChecked()
         }
 
 class DownloadProgressDialog(QDialog):
@@ -812,14 +924,67 @@ class MiniDownloadPro(QMainWindow):
         self.allow_quit = False
         
         self.initUI()
+        
+        # Load and set window icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.ico")
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.png")
+            
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        else:
+            self.setWindowIcon(self.style().standardIcon(QStyle.SP_ArrowDown))
         self.setup_tray_icon()
         
         self.extension_emitter = ExtensionSignalEmitter()
         self.extension_emitter.add_url_signal.connect(self.add_extension_url)
         self.start_extension_server()
+        self.start_ytdlp_update_check()
         
+    def start_ytdlp_update_check(self):
+        try:
+            current_version = yt_dlp.version.__version__
+            self.update_worker = YtdlpUpdateWorker(current_version)
+            self.update_worker.finished.connect(self.on_ytdlp_updated)
+            self.update_worker.start()
+        except Exception as e:
+            print("Could not start yt-dlp update check:", e)
+            
+    def on_ytdlp_updated(self, new_version):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Downloader Core Updated")
+        msg.setText(f"The core downloading engine (yt-dlp) has been successfully updated to version {new_version}.\n\nPlease restart the application to apply the update.")
+        msg.setIcon(QMessageBox.Information)
+        if self.is_dark_mode:
+            msg.setStyleSheet("""
+                QMessageBox { background-color: #1A1A1A; color: #FFFFFF; }
+                QLabel { color: #FFFFFF; }
+                QPushButton { background-color: #42A85F; color: #FFFFFF; border: none; border-radius: 4px; padding: 6px 12px; min-width: 70px; }
+                QPushButton:hover { background-color: #388E3C; }
+            """)
+        msg.exec_()
+        
+    def show_about_dialog(self):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("About Mini Download")
+        text = (
+            "🎬 Mini Download Version: 5.5.1\n"
+            "🔗 \n"
+            "© 2026 OwnerBy Admin-Kh. All rights reserved."
+        )
+        msg.setText(text)
+        msg.setIcon(QMessageBox.Information)
+        if self.is_dark_mode:
+            msg.setStyleSheet("""
+                QMessageBox { background-color: #1A1A1A; color: #FFFFFF; }
+                QLabel { color: #FFFFFF; font-size: 13px; }
+                QPushButton { background-color: #42A85F; color: #FFFFFF; border: none; border-radius: 4px; padding: 6px 12px; min-width: 70px; }
+                QPushButton:hover { background-color: #388E3C; }
+            """)
+        msg.exec_()
+
     def initUI(self):
-        self.setWindowTitle("Mini Download 5.5 (Pro Free MT)")
+        self.setWindowTitle("Mini Download 5.5.1 (Pro Free MT)")
         self.resize(1000, 750)
         
         self.dark_stylesheet = """
@@ -1232,7 +1397,7 @@ class MiniDownloadPro(QMainWindow):
 
         # Header Row
         header_layout = QHBoxLayout()
-        title_label = QLabel("Mini Download 5.5")
+        title_label = QLabel("Mini Download 5.5.1")
         title_label.setObjectName("titleLabel")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
@@ -1244,6 +1409,7 @@ class MiniDownloadPro(QMainWindow):
         # Help button with icon and dropdown indicator
         help_btn = QPushButton("❓ Help  ▾")
         help_btn.setObjectName("helpBtn")
+        help_btn.clicked.connect(self.show_about_dialog)
         
         # Theme/Sun circular button
         self.theme_btn = QPushButton("☀️")
@@ -1456,6 +1622,8 @@ class MiniDownloadPro(QMainWindow):
         status_bar_layout.addWidget(self.overall_progress)
         main_layout.addLayout(status_bar_layout)
 
+        self.load_settings()
+
     def uncheck_others(self, active):
         self.name_title_chk.setChecked(active == 'title')
         self.name_title_id_chk.setChecked(active == 'title_id')
@@ -1537,6 +1705,30 @@ class MiniDownloadPro(QMainWindow):
         directory = QFileDialog.getExistingDirectory(self, "Select Save Directory", self.save_dir_input.text())
         if directory:
             self.save_dir_input.setText(directory)
+            self.save_settings()
+
+    def load_settings(self):
+        try:
+            local_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+            config_path = os.path.join(local_dir, "settings.json")
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    saved_dir = data.get("default_save_dir")
+                    if saved_dir and os.path.exists(saved_dir):
+                        self.save_dir_input.setText(saved_dir)
+        except Exception as e:
+            print("Failed to load settings:", e)
+
+    def save_settings(self):
+        try:
+            local_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+            config_path = os.path.join(local_dir, "settings.json")
+            data = {"default_save_dir": self.save_dir_input.text()}
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            print("Failed to save settings:", e)
 
     def open_folder(self):
         path = self.save_dir_input.text()
@@ -1729,6 +1921,11 @@ class MiniDownloadPro(QMainWindow):
                     custom_filepath = dialog_data['filepath']
                     custom_save_dir, custom_filename = os.path.split(custom_filepath)
                     show_completed_msg = dialog_data['show_completed_msg']
+                    remember_dir = dialog_data.get('remember_dir', False)
+                    
+                    if remember_dir:
+                        self.save_dir_input.setText(custom_save_dir)
+                        self.save_settings()
                     
                     meta = {
                         'format_type': format_type,
@@ -1829,7 +2026,7 @@ class MiniDownloadPro(QMainWindow):
         if os.path.exists(icon_path):
             self.tray_icon.setIcon(QIcon(icon_path))
         else:
-            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ArrowDown))
             
         # Create tray menu
         tray_menu = QMenu()
@@ -1938,7 +2135,12 @@ class MiniDownloadPro(QMainWindow):
         custom_filepath = dialog_data['filepath']
         custom_save_dir, custom_filename = os.path.split(custom_filepath)
         show_completed_msg = dialog_data['show_completed_msg']
+        remember_dir = dialog_data.get('remember_dir', False)
         
+        if remember_dir:
+            self.save_dir_input.setText(custom_save_dir)
+            self.save_settings()
+            
         exists = False
         for r in range(self.table.rowCount()):
             if self.table.item(r, 4).text() == url:

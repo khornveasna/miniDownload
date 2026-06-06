@@ -75,7 +75,7 @@
   }
 
   function resolve(video) {
-    return near(video) || urlFromHref(location.href) || metadataUrl();
+    return near(video) || urlFromHref(location.href) || metadataUrl() || location.href;
   }
 
   window.MiniDownloadSites.tiktok = {resolve};
