@@ -16,6 +16,11 @@ from PyQt5.QtGui import QFont, QColor, QPalette, QBrush, QIcon
 import yt_dlp
 
 import os
+import hashlib
+import subprocess
+import sys
+
+SECRET_SALT = "MiniDownloadSecretSalt2026!"
 
 def sanitize_filename(filename):
     base, ext = os.path.splitext(filename)
@@ -23,6 +28,178 @@ def sanitize_filename(filename):
     clean_base = "".join(c if c not in invalid_chars else " " for c in base)
     clean_base = " ".join(clean_base.split()).strip()
     return clean_base + ext
+
+def get_hwid():
+    try:
+        output = subprocess.check_output('wmic csproduct get uuid', shell=True).decode().strip()
+        lines = [line.strip() for line in output.split('\n') if line.strip()]
+        if len(lines) > 1:
+            hwid = lines[1]
+            if hwid and hwid != "00000000-0000-0000-0000-000000000000":
+                return hwid
+    except Exception as e:
+        print("Failed to get Motherboard UUID:", e)
+        
+    try:
+        output = subprocess.check_output('wmic cpu get processorid', shell=True).decode().strip()
+        lines = [line.strip() for line in output.split('\n') if line.strip()]
+        if len(lines) > 1:
+            return "CPU-" + lines[1]
+    except Exception as e:
+        print("Failed to get CPU ID:", e)
+
+    import uuid
+    return "MAC-" + str(uuid.getnode())
+
+def validate_key(hwid, key):
+    raw = hwid.strip() + SECRET_SALT
+    h = hashlib.sha256(raw.encode('utf-8')).hexdigest().upper()
+    expected_key = f"{h[:4]}-{h[4:8]}-{h[8:12]}-{h[12:16]}"
+    return key.strip().upper() == expected_key
+
+class ActivationDialog(QDialog):
+    def __init__(self, hwid, parent=None):
+        super().__init__(parent)
+        self.hwid = hwid
+        self.setWindowTitle("Activation Required")
+        self.resize(500, 240)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #070F1B;
+                color: #FFFFFF;
+                font-family: "Segoe UI", Arial, sans-serif;
+            }
+            QLabel {
+                font-size: 12px;
+                color: #E2E8F0;
+            }
+            QLabel#titleLabel {
+                color: #3B82F6;
+                font-size: 18px;
+                font-weight: bold;
+            }
+            QLineEdit {
+                background-color: #0B1625;
+                color: #E2E8F0;
+                border: 1px solid #1E3A8A;
+                border-radius: 4px;
+                padding: 6px;
+                font-size: 12px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #3B82F6;
+            }
+            QPushButton {
+                background-color: #1E293B;
+                color: #FFFFFF;
+                border: 1px solid #334155;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+            }
+            QPushButton#activateBtn {
+                background-color: #0D6EFD;
+                border: 1px solid #0B5ED7;
+            }
+            QPushButton#activateBtn:hover {
+                background-color: #0B5ED7;
+            }
+            QPushButton#copyBtn {
+                background-color: #1E293B;
+                color: #5D9CEC;
+                border: 1px solid #1E3A8A;
+                padding: 4px 8px;
+            }
+            QPushButton#copyBtn:hover {
+                background-color: #1E3A8A;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("Mini Download Activation")
+        title.setObjectName("titleLabel")
+        layout.addWidget(title)
+
+        desc = QLabel("Please enter a valid activation key to use this software. Send your Machine ID below to the owner to get your activation key.")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        hwid_layout = QHBoxLayout()
+        hwid_label = QLabel("Machine ID:")
+        hwid_label.setFixedWidth(80)
+        self.hwid_edit = QLineEdit(self.hwid)
+        self.hwid_edit.setReadOnly(True)
+        
+        copy_btn = QPushButton("Copy")
+        copy_btn.setObjectName("copyBtn")
+        copy_btn.clicked.connect(self.copy_hwid)
+        
+        hwid_layout.addWidget(hwid_label)
+        hwid_layout.addWidget(self.hwid_edit)
+        hwid_layout.addWidget(copy_btn)
+        layout.addLayout(hwid_layout)
+
+        key_layout = QHBoxLayout()
+        key_label = QLabel("Activation Key:")
+        key_label.setFixedWidth(80)
+        self.key_edit = QLineEdit()
+        self.key_edit.setPlaceholderText("XXXX-XXXX-XXXX-XXXX")
+        key_layout.addWidget(key_label)
+        key_layout.addWidget(self.key_edit)
+        layout.addLayout(key_layout)
+
+        self.error_label = QLabel("")
+        self.error_label.setStyleSheet("color: #F87171; font-weight: bold;")
+        layout.addWidget(self.error_label)
+
+        layout.addSpacing(10)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        self.exit_btn = QPushButton("✖ Exit")
+        self.activate_btn = QPushButton("✔ Activate")
+        self.activate_btn.setObjectName("activateBtn")
+        
+        self.exit_btn.clicked.connect(self.reject)
+        self.activate_btn.clicked.connect(self.check_activation)
+        
+        btn_layout.addWidget(self.exit_btn)
+        btn_layout.addWidget(self.activate_btn)
+        layout.addLayout(btn_layout)
+
+    def copy_hwid(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.hwid)
+        QMessageBox.information(self, "Success", "Machine ID copied to clipboard!")
+
+    def check_activation(self):
+        key = self.key_edit.text().strip()
+        if not key:
+            self.error_label.setText("Key cannot be empty.")
+            return
+            
+        if validate_key(self.hwid, key):
+            try:
+                local_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+                license_path = os.path.join(local_dir, "license.key")
+                with open(license_path, "w") as f:
+                    f.write(key)
+                QMessageBox.information(self, "Success", "Activation successful!")
+                self.accept()
+            except Exception as e:
+                self.error_label.setText(f"Failed to save license key: {e}")
+        else:
+            self.error_label.setText("Invalid activation key.")
 
 class ExtensionSignalEmitter(QObject):
     add_url_signal = pyqtSignal(dict)
@@ -642,7 +819,7 @@ class MiniDownloadPro(QMainWindow):
         self.start_extension_server()
         
     def initUI(self):
-        self.setWindowTitle("Mini Download 5.5 (Pro Free Version)")
+        self.setWindowTitle("Mini Download 5.5 (Pro Free MT)")
         self.resize(1000, 750)
         
         self.dark_stylesheet = """
@@ -1811,6 +1988,22 @@ if __name__ == '__main__':
     palette.setColor(QPalette.HighlightedText, Qt.black)
     app.setPalette(palette)
     
+    hwid = get_hwid()
+    local_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    license_path = os.path.join(local_dir, "license.key")
+    
+    activated = False
+    if os.path.exists(license_path):
+        with open(license_path, "r") as f:
+            key = f.read().strip()
+        if validate_key(hwid, key):
+            activated = True
+            
+    if not activated:
+        dialog = ActivationDialog(hwid)
+        if dialog.exec_() != QDialog.Accepted:
+            sys.exit(0)
+            
     ex = MiniDownloadPro()
     ex.show()
     sys.exit(app.exec_())

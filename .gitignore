@@ -14,3 +14,11 @@ payload.bin
 Logo.ico
 Mini Download 5.5 full.exe_extracted/
 Mini_extension.zip
+
+# PyInstaller & PyArmor build files
+build/
+dist/
+.pyarmor/
+*.spec
+license.key
+*.log
