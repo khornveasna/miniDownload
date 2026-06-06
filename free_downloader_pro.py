@@ -1703,20 +1703,51 @@ class MiniDownloadPro(QMainWindow):
         if not filename or filename == "Mini Download":
             filename = title
 
+        # Determine format and quality
+        ext_type = data.get('type', 'mp4') # 'mp4' or 'mp3' or 'original'
+        ext_quality = data.get('quality', '1080')
+        
+        if ext_type == 'mp3':
+            format_type = "MP3 (Audio Only)"
+            quality = "Best Quality"
+            base, ext = os.path.splitext(filename)
+            if ext.lower() != ".mp3":
+                filename = base + ".mp3"
+        elif ext_type == 'original':
+            format_type = "MP4 (Video)"
+            quality = "Best Quality"
+            base, ext = os.path.splitext(filename)
+            if not ext:
+                filename = base + ".mp4"
+        else:
+            format_type = "MP4 (Video)"
+            if ext_quality == 'original':
+                quality = "Best Quality"
+            else:
+                quality = f"Quality: {ext_quality}"
+            base, ext = os.path.splitext(filename)
+            if not ext:
+                filename = base + ".mp4"
+
         # Bring window to front
         self.show()
         self.showNormal()
         self.activateWindow()
         
-        dialog = DownloadConfirmDialog(filename, url, self.save_dir_input.text(), self)
+        # Build default filepath
+        default_filepath = os.path.join(self.save_dir_input.text(), filename)
+        description = f"{filename} | Cookie: browser"
+        
+        dialog = DownloadInfoDialog(url, f"{format_type} ({quality})", default_filepath, description, self)
         result = dialog.exec_()
         
         if result == 0: # Cancel
             return
             
         dialog_data = dialog.get_result()
-        custom_title = dialog_data['title']
-        custom_save_dir = dialog_data['save_dir']
+        custom_filepath = dialog_data['filepath']
+        custom_save_dir, custom_filename = os.path.split(custom_filepath)
+        show_completed_msg = dialog_data['show_completed_msg']
         
         exists = False
         for r in range(self.table.rowCount()):
@@ -1725,37 +1756,21 @@ class MiniDownloadPro(QMainWindow):
                 break
                 
         if not exists:
-            # Map format and quality
-            ext_type = data.get('type', 'mp4') # 'mp4' or 'mp3' or 'original'
-            ext_quality = data.get('quality', '1080')
-            
-            if ext_type == 'mp3':
-                format_type = "MP3 (Audio Only)"
-                quality = "Best Quality"
-            elif ext_type == 'original':
-                format_type = "MP4 (Video)"
-                quality = "Best Quality"
-            else:
-                format_type = "MP4 (Video)"
-                if ext_quality == 'original':
-                    quality = "Best Quality"
-                else:
-                    quality = f"Quality: {ext_quality}"
-            
             self.url_metadata[url] = {
                 'format_type': format_type,
                 'quality': quality,
                 'save_dir': custom_save_dir,
-                'title': custom_title
+                'title': custom_filename,
+                'show_completed_msg': show_completed_msg
             }
             
-            self.add_row_to_table(custom_title, "0.00MiB/s", "N/A", "Pending", url)
+            self.add_row_to_table(custom_filename, "0.00MiB/s", "N/A", "Pending", url)
             
             # Show a system tray message
             if self.tray_icon.isVisible():
                 self.tray_icon.showMessage(
                     "Mini Download",
-                    f"Added video to queue:\n{custom_title[:50]}...",
+                    f"Added video to queue:\n{custom_filename[:50]}...",
                     QSystemTrayIcon.Information,
                     2000
                 )
