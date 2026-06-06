@@ -81,7 +81,18 @@ class DownloadWorker(QRunnable):
     def run(self):
         self.signals.status.emit(self.row_idx, "", "Downloading")
         
-        extracted_ffmpeg = r"c:\Users\K-VeaSna\Desktop\Mini Download 5.4.1 full\Mini Download 5.4.1 full.exe_extracted\ffmpeg.exe"
+        # Determine ffmpeg.exe path robustly
+        local_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        local_ffmpeg = os.path.join(local_dir, "ffmpeg.exe")
+        extracted_ffmpeg_54 = r"c:\Users\K-VeaSna\Desktop\Mini Download 5.4.1 full\Mini Download 5.4.1 full.exe_extracted\ffmpeg.exe"
+        extracted_ffmpeg_55 = r"c:\Users\K-VeaSna\Desktop\Mini Download 5.4.1 full\Mini Download 5.5 full.exe_extracted\ffmpeg.exe"
+        
+        if os.path.exists(local_ffmpeg):
+            ffmpeg_path = local_ffmpeg
+        elif os.path.exists(extracted_ffmpeg_55):
+            ffmpeg_path = extracted_ffmpeg_55
+        else:
+            ffmpeg_path = extracted_ffmpeg_54
         
         # Configure output template
         if self.naming_opts.get('title_id', False):
@@ -112,8 +123,8 @@ class DownloadWorker(QRunnable):
         if self.extras_opts.get('description', False):
             ydl_opts['writedesc'] = True
 
-        if os.path.exists(extracted_ffmpeg):
-            ydl_opts['ffmpeg_location'] = extracted_ffmpeg
+        if os.path.exists(ffmpeg_path):
+            ydl_opts['ffmpeg_location'] = ffmpeg_path
 
         # Configure formats
         if self.format_type == "MP3 (Audio Only)":
@@ -157,7 +168,7 @@ class MiniDownloadPro(QMainWindow):
         self.initUI()
         
     def initUI(self):
-        self.setWindowTitle("Mini Download 5.4.1 (Pro Free Version)")
+        self.setWindowTitle("Mini Download 5.5 (Pro Free Version)")
         self.resize(1000, 750)
         
         self.dark_stylesheet = """
@@ -570,7 +581,7 @@ class MiniDownloadPro(QMainWindow):
 
         # Header Row
         header_layout = QHBoxLayout()
-        title_label = QLabel("Mini Download 5.4.1")
+        title_label = QLabel("Mini Download 5.5")
         title_label.setObjectName("titleLabel")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
