@@ -1,15 +1,58 @@
 import sys
 import os
 import threading
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLineEdit, QPushButton, QLabel, 
                              QProgressBar, QFileDialog, QComboBox, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QPlainTextEdit,
-                             QGroupBox, QCheckBox, QSpinBox, QMessageBox, QAbstractItemView)
+                             QGroupBox, QCheckBox, QSpinBox, QMessageBox, QAbstractItemView,
+                             QSystemTrayIcon, QMenu, QAction, QStyle)
 from PyQt5.QtCore import pyqtSignal, QObject, Qt, QRunnable, QThreadPool
-from PyQt5.QtGui import QFont, QColor, QPalette, QBrush
+from PyQt5.QtGui import QFont, QColor, QPalette, QBrush, QIcon
 import yt_dlp
+
+class ExtensionSignalEmitter(QObject):
+    add_url_signal = pyqtSignal(dict)
+
+class ExtensionRequestHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # Quiet logging
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
+    def do_POST(self):
+        if self.path == '/add':
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            
+            self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            
+            try:
+                data = json.loads(post_data.decode('utf-8'))
+                # Emit to PyQt main thread safely
+                self.server.main_window.extension_emitter.add_url_signal.emit(data)
+                self.wfile.write(json.dumps({"status": "success"}).encode('utf-8'))
+            except Exception as e:
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+class ExtensionServer(HTTPServer):
+    def __init__(self, server_address, RequestHandlerClass, main_window):
+        super().__init__(server_address, RequestHandlerClass)
+        self.main_window = main_window
 
 class WorkerSignals(QObject):
     progress = pyqtSignal(int, int, str, str) # row_idx, percent, speed, size
@@ -165,7 +208,15 @@ class MiniDownloadPro(QMainWindow):
         self.is_dark_mode = True
         self.thread_pool = QThreadPool()
         self.active_workers = {}
+        self.url_metadata = {}
+        self.allow_quit = False
+        
         self.initUI()
+        self.setup_tray_icon()
+        
+        self.extension_emitter = ExtensionSignalEmitter()
+        self.extension_emitter.add_url_signal.connect(self.add_extension_url)
+        self.start_extension_server()
         
     def initUI(self):
         self.setWindowTitle("Mini Download 5.5 (Pro Free Version)")
@@ -1043,7 +1094,10 @@ class MiniDownloadPro(QMainWindow):
             status = self.table.item(r, 3).text()
             if status.lower() in ['pending', 'ready', 'failed', 'scan error']:
                 url = self.table.item(r, 4).text()
-                worker = DownloadWorker(r, url, save_dir, format_type, quality, naming_opts, extras_opts, self.download_signals)
+                meta = self.url_metadata.get(url, {})
+                row_format = meta.get('format_type', format_type)
+                row_quality = meta.get('quality', quality)
+                worker = DownloadWorker(r, url, save_dir, row_format, row_quality, naming_opts, extras_opts, self.download_signals)
                 self.active_workers[r] = worker
                 self.thread_pool.start(worker)
 
@@ -1067,6 +1121,115 @@ class MiniDownloadPro(QMainWindow):
             self.update_row_status(row_idx, "", "Failed")
         self.active_workers.clear()
         self.update_status_label()
+
+    def setup_tray_icon(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        # Load app icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.ico")
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Logo.png")
+            
+        if os.path.exists(icon_path):
+            self.tray_icon.setIcon(QIcon(icon_path))
+        else:
+            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+            
+        # Create tray menu
+        tray_menu = QMenu()
+        open_action = QAction("Open Mini Download", self)
+        open_action.triggered.connect(self.show_normal_and_active)
+        tray_menu.addAction(open_action)
+        
+        tray_menu.addSeparator()
+        
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.quit_application)
+        tray_menu.addAction(exit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+        self.tray_icon.show()
+
+    def show_normal_and_active(self):
+        self.show()
+        self.showNormal()
+        self.activateWindow()
+
+    def on_tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            if self.isVisible():
+                self.hide()
+            else:
+                self.show_normal_and_active()
+        elif reason == QSystemTrayIcon.DoubleClick:
+            self.show_normal_and_active()
+
+    def quit_application(self):
+        self.allow_quit = True
+        self.close()
+
+    def closeEvent(self, event):
+        if hasattr(self, 'allow_quit') and self.allow_quit:
+            self.tray_icon.hide()
+            event.accept()
+        else:
+            self.hide()
+            event.ignore()
+
+    def start_extension_server(self):
+        try:
+            self.extension_server = ExtensionServer(('127.0.0.1', 8765), ExtensionRequestHandler, self)
+            t = threading.Thread(target=self.extension_server.serve_forever, daemon=True)
+            t.start()
+        except Exception as e:
+            print("Failed to start extension HTTP server:", e)
+
+    def add_extension_url(self, data):
+        url = data.get('url')
+        title = data.get('title', 'Video from Browser')
+        if not url:
+            return
+            
+        exists = False
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 4).text() == url:
+                exists = True
+                break
+                
+        if not exists:
+            # Map format and quality
+            ext_type = data.get('type', 'mp4') # 'mp4' or 'mp3'
+            ext_quality = data.get('quality', '1080')
+            
+            if ext_type == 'mp3':
+                format_type = "MP3 (Audio Only)"
+                quality = "Best Quality"
+            else:
+                format_type = "MP4 (Video)"
+                if ext_quality == 'original':
+                    quality = "Best Quality"
+                else:
+                    quality = f"Quality: {ext_quality}"
+            
+            self.url_metadata[url] = {
+                'format_type': format_type,
+                'quality': quality
+            }
+            
+            self.add_row_to_table(title, "0.00MiB/s", "N/A", "Pending", url)
+            
+            # Show a system tray message
+            if self.tray_icon.isVisible():
+                self.tray_icon.showMessage(
+                    "Mini Download",
+                    f"Added video to queue:\n{title[:50]}...",
+                    QSystemTrayIcon.Information,
+                    2000
+                )
+            
+            # Automatically start downloading
+            self.start_downloads()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
