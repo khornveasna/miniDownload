@@ -15,6 +15,15 @@ from PyQt5.QtCore import pyqtSignal, QObject, Qt, QRunnable, QThreadPool
 from PyQt5.QtGui import QFont, QColor, QPalette, QBrush, QIcon
 import yt_dlp
 
+import os
+
+def sanitize_filename(filename):
+    base, ext = os.path.splitext(filename)
+    invalid_chars = '<>:"/\\|?*'
+    clean_base = "".join(c if c not in invalid_chars else " " for c in base)
+    clean_base = " ".join(clean_base.split()).strip()
+    return clean_base + ext
+
 class ExtensionSignalEmitter(QObject):
     add_url_signal = pyqtSignal(dict)
 
@@ -1529,6 +1538,8 @@ class MiniDownloadPro(QMainWindow):
                     elif format_type == "MP4 (Video)" and not ext:
                         default_name = base + ".mp4"
                         
+                    default_name = sanitize_filename(default_name)
+                        
                     default_filepath = os.path.join(save_dir, default_name)
                     description = f"{default_name} | Cookie: browser"
                     
@@ -1728,6 +1739,8 @@ class MiniDownloadPro(QMainWindow):
             base, ext = os.path.splitext(filename)
             if not ext:
                 filename = base + ".mp4"
+
+        filename = sanitize_filename(filename)
 
         # Bring window to front
         self.show()
