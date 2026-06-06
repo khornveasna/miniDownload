@@ -1,0 +1,13 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Executables
+*.exe
+Mini Download 5.4.1 full.exe_extracted/
+
+# Other binary or local files
+*.dll
+payload.bin
