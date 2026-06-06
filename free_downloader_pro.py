@@ -289,10 +289,133 @@ class MiniDownloadPro(QMainWindow):
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         
-        settings_btn = QPushButton("Settings")
-        help_btn = QPushButton("Help")
+        # Settings button with icon
+        settings_btn = QPushButton("⚙️ Settings")
+        settings_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                color: #FFFFFF;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                color: #42A85F;
+            }
+        """)
+        
+        # Help button with icon and dropdown indicator
+        help_btn = QPushButton("❓ Help  ▾")
+        help_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                color: #FFFFFF;
+                font-weight: bold;
+                font-size: 13px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                color: #42A85F;
+            }
+        """)
+        
+        # Theme/Sun circular button
+        theme_btn = QPushButton("☀️")
+        theme_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid #444444;
+                border-radius: 13px;
+                min-width: 26px;
+                max-width: 26px;
+                min-height: 26px;
+                max-height: 26px;
+                font-size: 13px;
+                color: #FFB300;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #2D2D2D;
+                border-color: #FFB300;
+            }
+        """)
+        
+        # Minimize circular button
+        min_btn = QPushButton("-")
+        min_btn.clicked.connect(self.showMinimized)
+        min_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FFB020;
+                color: #1A1A1A;
+                border: none;
+                border-radius: 9px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #FFC040;
+            }
+        """)
+        
+        # Maximize circular button
+        max_btn = QPushButton("□")
+        max_btn.clicked.connect(self.toggle_maximize)
+        max_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2DCA73;
+                color: #1A1A1A;
+                border: none;
+                border-radius: 9px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
+                font-weight: bold;
+                font-size: 10px;
+                padding: 0px;
+                margin-bottom: 1px;
+            }
+            QPushButton:hover {
+                background-color: #3DDA83;
+            }
+        """)
+        
+        # Close circular button
+        close_btn = QPushButton("x")
+        close_btn.clicked.connect(self.close)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5F56;
+                color: #1A1A1A;
+                border: none;
+                border-radius: 9px;
+                min-width: 18px;
+                max-width: 18px;
+                min-height: 18px;
+                max-height: 18px;
+                font-weight: bold;
+                font-size: 12px;
+                padding: 0px;
+                margin-bottom: 1px;
+            }
+            QPushButton:hover {
+                background-color: #FF7F76;
+            }
+        """)
+        
         header_layout.addWidget(settings_btn)
         header_layout.addWidget(help_btn)
+        header_layout.addWidget(theme_btn)
+        header_layout.addWidget(min_btn)
+        header_layout.addWidget(max_btn)
+        header_layout.addWidget(close_btn)
         main_layout.addLayout(header_layout)
 
         # Add Video Links Box
@@ -484,6 +607,12 @@ class MiniDownloadPro(QMainWindow):
         self.name_id_chk.setChecked(active == 'id')
         self.name_num_chk.setChecked(active == 'number')
         self.name_num_title_chk.setChecked(active == 'num_title')
+
+    def toggle_maximize(self):
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
 
     def format_changed(self, index):
         self.quality_combo.setEnabled(index == 0)
