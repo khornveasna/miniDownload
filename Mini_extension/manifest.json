@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "Mini Download Video Button",
+  "version": "1.0.0",
+  "description": "Show a Mini Download button on browser videos and send selected media to Mini Download. Supports Mini Download 5.5 or newer.",
+  "incognito": "spanning",
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icon.png",
+      "32": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    },
+    "default_title": "Mini Download"
+  },
+  "permissions": [
+    "downloads"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "http://127.0.0.1:8765/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "sites/youtube.js",
+        "sites/tiktok.js",
+        "sites/facebook.js",
+        "sites/other.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

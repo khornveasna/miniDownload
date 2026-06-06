@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QProgressBar, QFileDialog, QComboBox, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QPlainTextEdit,
                              QGroupBox, QCheckBox, QSpinBox, QMessageBox, QAbstractItemView,
-                             QSystemTrayIcon, QMenu, QAction, QStyle)
+                             QSystemTrayIcon, QMenu, QAction, QStyle, QDialog, QFormLayout)
 from PyQt5.QtCore import pyqtSignal, QObject, Qt, QRunnable, QThreadPool
 from PyQt5.QtGui import QFont, QColor, QPalette, QBrush, QIcon
 import yt_dlp
@@ -24,9 +24,20 @@ class ExtensionRequestHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
+
+    def do_GET(self):
+        if self.path == '/ping':
+            self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"pong")
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_POST(self):
         if self.path == '/add':
@@ -86,7 +97,7 @@ class ScanWorker(QRunnable):
             self.signals.status.emit(self.row_idx, "Scan failed", "Scan Error")
 
 class DownloadWorker(QRunnable):
-    def __init__(self, row_idx, url, save_dir, format_type, quality, naming_opts, extras_opts, signals):
+    def __init__(self, row_idx, url, save_dir, format_type, quality, naming_opts, extras_opts, signals, custom_filename=None):
         super().__init__()
         self.row_idx = row_idx
         self.url = url
@@ -97,6 +108,7 @@ class DownloadWorker(QRunnable):
         self.extras_opts = extras_opts
         self.signals = signals
         self._is_cancelled = False
+        self.custom_filename = custom_filename
 
     def progress_hook(self, d):
         if self._is_cancelled:
@@ -138,7 +150,10 @@ class DownloadWorker(QRunnable):
             ffmpeg_path = extracted_ffmpeg_54
         
         # Configure output template
-        if self.naming_opts.get('title_id', False):
+        if self.custom_filename:
+            base_name, _ = os.path.splitext(self.custom_filename)
+            out_name = f"{base_name}.%(ext)s"
+        elif self.naming_opts.get('title_id', False):
             out_name = "%(title)s - %(id)s.%(ext)s"
         elif self.naming_opts.get('id_only', False):
             out_name = "%(id)s.%(ext)s"
@@ -201,6 +216,85 @@ class DownloadWorker(QRunnable):
             import traceback
             traceback.print_exc()
             self.signals.finished.emit(self.row_idx, False, str(e))
+
+class DownloadConfirmDialog(QDialog):
+    def __init__(self, title, url, default_dir, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Mini Download - Confirm Download")
+        self.resize(500, 200)
+        
+        # Style sheet to match the app's dark/light theme
+        self.is_dark = getattr(parent, 'is_dark_mode', True)
+        if self.is_dark:
+            self.setStyleSheet("""
+                QDialog { background-color: #1A1A1A; color: white; }
+                QLabel { color: white; font-size: 13px; }
+                QLineEdit { background-color: #262626; color: white; border: 1px solid #3A3A3A; padding: 6px; border-radius: 4px; }
+                QPushButton { background-color: #2D8B4E; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; }
+                QPushButton:hover { background-color: #3AA35E; }
+                QPushButton#cancelBtn { background-color: #555555; }
+                QPushButton#cancelBtn:hover { background-color: #666666; }
+            """)
+        else:
+            self.setStyleSheet("""
+                QDialog { background-color: #F3F3F3; color: black; }
+                QLabel { color: black; font-size: 13px; }
+                QLineEdit { background-color: white; color: black; border: 1px solid #CCCCCC; padding: 6px; border-radius: 4px; }
+                QPushButton { background-color: #2D8B4E; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; }
+                QPushButton:hover { background-color: #3AA35E; }
+                QPushButton#cancelBtn { background-color: #CCCCCC; color: black; }
+                QPushButton#cancelBtn:hover { background-color: #DDDDDD; }
+            """)
+            
+        layout = QVBoxLayout(self)
+        
+        form = QFormLayout()
+        self.title_edit = QLineEdit(title)
+        form.addRow("File Name:", self.title_edit)
+        
+        self.url_label = QLabel(url)
+        self.url_label.setWordWrap(True)
+        form.addRow("URL:", self.url_label)
+        
+        dir_layout = QHBoxLayout()
+        self.dir_edit = QLineEdit(default_dir)
+        self.dir_edit.setReadOnly(True)
+        dir_btn = QPushButton("Browse...")
+        dir_btn.clicked.connect(self.browse_dir)
+        dir_layout.addWidget(self.dir_edit)
+        dir_layout.addWidget(dir_btn)
+        form.addRow("Save To:", dir_layout)
+        
+        layout.addLayout(form)
+        layout.addSpacing(15)
+        
+        btn_layout = QHBoxLayout()
+        self.start_btn = QPushButton("Download Now")
+        self.later_btn = QPushButton("Download Later")
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("cancelBtn")
+        
+        self.start_btn.clicked.connect(lambda: self.done(1))
+        self.later_btn.clicked.connect(lambda: self.done(2))
+        self.cancel_btn.clicked.connect(lambda: self.done(0))
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.start_btn)
+        btn_layout.addWidget(self.later_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        
+        layout.addLayout(btn_layout)
+        
+    def browse_dir(self):
+        directory = QFileDialog.getExistingDirectory(self, "Select Save Directory", self.dir_edit.text())
+        if directory:
+            self.dir_edit.setText(directory)
+            
+    def get_result(self):
+        return {
+            'title': self.title_edit.text(),
+            'save_dir': self.dir_edit.text()
+        }
 
 class MiniDownloadPro(QMainWindow):
     def __init__(self):
@@ -1097,7 +1191,9 @@ class MiniDownloadPro(QMainWindow):
                 meta = self.url_metadata.get(url, {})
                 row_format = meta.get('format_type', format_type)
                 row_quality = meta.get('quality', quality)
-                worker = DownloadWorker(r, url, save_dir, row_format, row_quality, naming_opts, extras_opts, self.download_signals)
+                row_save_dir = meta.get('save_dir', save_dir)
+                custom_filename = meta.get('title', None)
+                worker = DownloadWorker(r, url, row_save_dir, row_format, row_quality, naming_opts, extras_opts, self.download_signals, custom_filename=custom_filename)
                 self.active_workers[r] = worker
                 self.thread_pool.start(worker)
 
@@ -1191,6 +1287,25 @@ class MiniDownloadPro(QMainWindow):
         if not url:
             return
             
+        filename = data.get('filename', title)
+        if not filename or filename == "Mini Download":
+            filename = title
+
+        # Bring window to front
+        self.show()
+        self.showNormal()
+        self.activateWindow()
+        
+        dialog = DownloadConfirmDialog(filename, url, self.save_dir_input.text(), self)
+        result = dialog.exec_()
+        
+        if result == 0: # Cancel
+            return
+            
+        dialog_data = dialog.get_result()
+        custom_title = dialog_data['title']
+        custom_save_dir = dialog_data['save_dir']
+        
         exists = False
         for r in range(self.table.rowCount()):
             if self.table.item(r, 4).text() == url:
@@ -1199,11 +1314,14 @@ class MiniDownloadPro(QMainWindow):
                 
         if not exists:
             # Map format and quality
-            ext_type = data.get('type', 'mp4') # 'mp4' or 'mp3'
+            ext_type = data.get('type', 'mp4') # 'mp4' or 'mp3' or 'original'
             ext_quality = data.get('quality', '1080')
             
             if ext_type == 'mp3':
                 format_type = "MP3 (Audio Only)"
+                quality = "Best Quality"
+            elif ext_type == 'original':
+                format_type = "MP4 (Video)"
                 quality = "Best Quality"
             else:
                 format_type = "MP4 (Video)"
@@ -1214,22 +1332,24 @@ class MiniDownloadPro(QMainWindow):
             
             self.url_metadata[url] = {
                 'format_type': format_type,
-                'quality': quality
+                'quality': quality,
+                'save_dir': custom_save_dir,
+                'title': custom_title
             }
             
-            self.add_row_to_table(title, "0.00MiB/s", "N/A", "Pending", url)
+            self.add_row_to_table(custom_title, "0.00MiB/s", "N/A", "Pending", url)
             
             # Show a system tray message
             if self.tray_icon.isVisible():
                 self.tray_icon.showMessage(
                     "Mini Download",
-                    f"Added video to queue:\n{title[:50]}...",
+                    f"Added video to queue:\n{custom_title[:50]}...",
                     QSystemTrayIcon.Information,
                     2000
                 )
             
-            # Automatically start downloading
-            self.start_downloads()
+            if result == 1: # Download Now
+                self.start_downloads()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
