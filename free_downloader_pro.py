@@ -9,7 +9,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QProgressBar, QFileDialog, QComboBox, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QPlainTextEdit,
                              QGroupBox, QCheckBox, QSpinBox, QMessageBox, QAbstractItemView,
-                             QSystemTrayIcon, QMenu, QAction, QStyle, QDialog, QFormLayout)
+                             QSystemTrayIcon, QMenu, QAction, QStyle, QDialog, QFormLayout,
+                             QFrame, QGridLayout)
 from PyQt5.QtCore import pyqtSignal, QObject, Qt, QRunnable, QThreadPool
 from PyQt5.QtGui import QFont, QColor, QPalette, QBrush, QIcon
 import yt_dlp
@@ -67,6 +68,7 @@ class ExtensionServer(HTTPServer):
 
 class WorkerSignals(QObject):
     progress = pyqtSignal(int, int, str, str) # row_idx, percent, speed, size
+    progress_detailed = pyqtSignal(int, dict)
     status = pyqtSignal(int, str, str) # row_idx, filename, status
     finished = pyqtSignal(int, bool, str) # row_idx, success, message
 
@@ -122,11 +124,22 @@ class DownloadWorker(QRunnable):
             if total > 0:
                 percent_val = int((downloaded / total) * 100)
                 
-            percent_str = f"{percent_val}%"
             speed = d.get('_speed_str', '0.00MiB/s')
+            eta = d.get('_eta_str', 'N/A')
             
             total_mb = total / (1024 * 1024) if total > 0 else 0
-            size_str = f"{total_mb:.2f}MiB" if total_mb > 0 else "N/A"
+            size_str = f"{total_mb:.2f} MiB" if total_mb > 0 else "N/A"
+            
+            downloaded_mb = downloaded / (1024 * 1024)
+            downloaded_str = f"{downloaded_mb:.2f} MiB"
+            
+            self.signals.progress_detailed.emit(self.row_idx, {
+                'percent': percent_val,
+                'speed': speed,
+                'size': size_str,
+                'downloaded_str': downloaded_str,
+                'eta': eta
+            })
             
             self.signals.progress.emit(self.row_idx, percent_val, speed, size_str)
             
@@ -206,95 +219,401 @@ class DownloadWorker(QRunnable):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.url, download=True)
+                filepath = ydl.prepare_filename(info)
+                if not os.path.exists(filepath):
+                    base, ext = os.path.splitext(filepath)
+                    for possible_ext in ['.mp4', '.mkv', '.webm', '.mp3', '.m4a']:
+                        if os.path.exists(base + possible_ext):
+                            filepath = base + possible_ext
+                            break
                 title = info.get('title', '') if info else ''
                 if title:
                     self.signals.status.emit(self.row_idx, title, "done")
                 else:
                     self.signals.status.emit(self.row_idx, "", "done")
-            self.signals.finished.emit(self.row_idx, True, "Success")
+            self.signals.finished.emit(self.row_idx, True, filepath)
         except Exception as e:
             import traceback
             traceback.print_exc()
             self.signals.finished.emit(self.row_idx, False, str(e))
 
-class DownloadConfirmDialog(QDialog):
-    def __init__(self, title, url, default_dir, parent=None):
+class DownloadInfoDialog(QDialog):
+    def __init__(self, url, format_label, default_filepath, description, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Mini Download - Confirm Download")
-        self.resize(500, 200)
+        self.setWindowTitle("Download info")
+        self.resize(600, 260)
         
-        # Style sheet to match the app's dark/light theme
-        self.is_dark = getattr(parent, 'is_dark_mode', True)
-        if self.is_dark:
-            self.setStyleSheet("""
-                QDialog { background-color: #1A1A1A; color: white; }
-                QLabel { color: white; font-size: 13px; }
-                QLineEdit { background-color: #262626; color: white; border: 1px solid #3A3A3A; padding: 6px; border-radius: 4px; }
-                QPushButton { background-color: #2D8B4E; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; }
-                QPushButton:hover { background-color: #3AA35E; }
-                QPushButton#cancelBtn { background-color: #555555; }
-                QPushButton#cancelBtn:hover { background-color: #666666; }
-            """)
-        else:
-            self.setStyleSheet("""
-                QDialog { background-color: #F3F3F3; color: black; }
-                QLabel { color: black; font-size: 13px; }
-                QLineEdit { background-color: white; color: black; border: 1px solid #CCCCCC; padding: 6px; border-radius: 4px; }
-                QPushButton { background-color: #2D8B4E; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-weight: bold; }
-                QPushButton:hover { background-color: #3AA35E; }
-                QPushButton#cancelBtn { background-color: #CCCCCC; color: black; }
-                QPushButton#cancelBtn:hover { background-color: #DDDDDD; }
-            """)
-            
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #070F1B;
+                color: #FFFFFF;
+                font-family: "Segoe UI", Arial, sans-serif;
+            }
+            QLabel {
+                color: #5D9CEC;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QLineEdit {
+                background-color: #0B1625;
+                color: #E2E8F0;
+                border: 1px solid #1E3A8A;
+                border-radius: 4px;
+                padding: 6px;
+                font-size: 12px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #3B82F6;
+            }
+            QPushButton {
+                background-color: #1E293B;
+                color: #FFFFFF;
+                border: 1px solid #334155;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+            }
+            QPushButton#startBtn {
+                background-color: #0D6EFD;
+                border: 1px solid #0B5ED7;
+            }
+            QPushButton#startBtn:hover {
+                background-color: #0B5ED7;
+            }
+            QPushButton#cancelBtn {
+                background-color: #1E293B;
+                color: #F87171;
+                border: 1px solid #450A0A;
+            }
+            QPushButton#cancelBtn:hover {
+                background-color: #450A0A;
+            }
+            QCheckBox {
+                color: #94A3B8;
+                font-size: 11px;
+            }
+        """)
+
         layout = QVBoxLayout(self)
-        
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
         form = QFormLayout()
-        self.title_edit = QLineEdit(title)
-        form.addRow("File Name:", self.title_edit)
-        
-        self.url_label = QLabel(url)
-        self.url_label.setWordWrap(True)
-        form.addRow("URL:", self.url_label)
-        
-        dir_layout = QHBoxLayout()
-        self.dir_edit = QLineEdit(default_dir)
-        self.dir_edit.setReadOnly(True)
-        dir_btn = QPushButton("Browse...")
-        dir_btn.clicked.connect(self.browse_dir)
-        dir_layout.addWidget(self.dir_edit)
-        dir_layout.addWidget(dir_btn)
-        form.addRow("Save To:", dir_layout)
-        
+        form.setLabelAlignment(Qt.AlignLeft)
+        form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.setSpacing(8)
+
+        self.address_edit = QLineEdit(url)
+        self.address_edit.setReadOnly(True)
+        form.addRow("Address", self.address_edit)
+
+        self.format_edit = QLineEdit(format_label)
+        self.format_edit.setReadOnly(True)
+        form.addRow("Format", self.format_edit)
+
+        file_layout = QHBoxLayout()
+        self.file_edit = QLineEdit(default_filepath)
+        self.file_edit.setReadOnly(True)
+        browse_btn = QPushButton("...")
+        browse_btn.setFixedWidth(40)
+        browse_btn.clicked.connect(self.browse_file)
+        file_layout.addWidget(self.file_edit)
+        file_layout.addWidget(browse_btn)
+        form.addRow("Saved file", file_layout)
+
+        self.desc_edit = QLineEdit(description)
+        form.addRow("Description", self.desc_edit)
+
         layout.addLayout(form)
-        layout.addSpacing(15)
-        
+
+        self.show_msg_chk = QCheckBox("Show message when download completed")
+        self.show_msg_chk.setChecked(True)
+        layout.addWidget(self.show_msg_chk)
+
+        layout.addSpacing(10)
+
         btn_layout = QHBoxLayout()
-        self.start_btn = QPushButton("Download Now")
-        self.later_btn = QPushButton("Download Later")
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setObjectName("cancelBtn")
-        
-        self.start_btn.clicked.connect(lambda: self.done(1))
-        self.later_btn.clicked.connect(lambda: self.done(2))
-        self.cancel_btn.clicked.connect(lambda: self.done(0))
-        
         btn_layout.addStretch()
-        btn_layout.addWidget(self.start_btn)
+
+        self.later_btn = QPushButton("↻ Download Later")
+        self.start_btn = QPushButton("➡ Start Download")
+        self.start_btn.setObjectName("startBtn")
+        self.cancel_btn = QPushButton("✖ Cancel")
+        self.cancel_btn.setObjectName("cancelBtn")
+
+        self.later_btn.clicked.connect(lambda: self.done(2))
+        self.start_btn.clicked.connect(lambda: self.done(1))
+        self.cancel_btn.clicked.connect(lambda: self.done(0))
+
         btn_layout.addWidget(self.later_btn)
+        btn_layout.addWidget(self.start_btn)
         btn_layout.addWidget(self.cancel_btn)
-        
+
         layout.addLayout(btn_layout)
+
+    def browse_file(self):
+        current_path = self.file_edit.text()
+        directory, filename = os.path.split(current_path)
         
-    def browse_dir(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Save Directory", self.dir_edit.text())
-        if directory:
-            self.dir_edit.setText(directory)
-            
+        name_part, ext = os.path.splitext(filename)
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save File As", current_path, f"Files (*{ext or '.*'})"
+        )
+        if file_path:
+            self.file_edit.setText(file_path)
+
     def get_result(self):
         return {
-            'title': self.title_edit.text(),
-            'save_dir': self.dir_edit.text()
+            'filepath': self.file_edit.text(),
+            'description': self.desc_edit.text(),
+            'show_completed_msg': self.show_msg_chk.isChecked()
         }
+
+class DownloadProgressDialog(QDialog):
+    def __init__(self, filename, url, parent=None):
+        super().__init__(parent)
+        self.filename = filename
+        self.url = url
+        self.setWindowTitle(f"0% {filename}")
+        self.resize(550, 250)
+        
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #070F1B;
+                color: #FFFFFF;
+                font-family: "Segoe UI", Arial, sans-serif;
+            }
+            QLabel {
+                font-size: 12px;
+            }
+            QLabel#titleLabel {
+                color: #5D9CEC;
+                font-weight: bold;
+            }
+            QProgressBar {
+                border: 1px solid #1E3A8A;
+                border-radius: 4px;
+                background-color: #0B1625;
+                text-align: center;
+                color: white;
+                font-weight: bold;
+                height: 22px;
+            }
+            QProgressBar::chunk {
+                background-color: #3B82F6;
+            }
+            QPushButton {
+                background-color: #1E293B;
+                color: #F87171;
+                border: 1px solid #450A0A;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #450A0A;
+            }
+            QFrame#statsFrame {
+                border: 1px solid #1E3A8A;
+                border-radius: 6px;
+                background-color: #091220;
+                padding: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(12)
+
+        url_lbl = QLabel(url)
+        url_lbl.setObjectName("titleLabel")
+        url_lbl.setWordWrap(True)
+        layout.addWidget(url_lbl)
+
+        stats_frame = QFrame()
+        stats_frame.setObjectName("statsFrame")
+        stats_layout = QGridLayout(stats_frame)
+        stats_layout.setSpacing(8)
+
+        def add_stat_row(grid, row, label_text):
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #5D9CEC; font-weight: bold;")
+            val = QLabel("-")
+            val.setStyleSheet("color: #FFFFFF;")
+            grid.addWidget(lbl, row, 0)
+            grid.addWidget(val, row, 1)
+            return val
+
+        self.val_status = add_stat_row(stats_layout, 0, "Status")
+        self.val_size = add_stat_row(stats_layout, 1, "File size")
+        self.val_downloaded = add_stat_row(stats_layout, 2, "Downloaded")
+        self.val_rate = add_stat_row(stats_layout, 3, "Transfer rate")
+        self.val_time = add_stat_row(stats_layout, 4, "Time left")
+        self.val_resume = add_stat_row(stats_layout, 5, "Resume capability")
+        self.val_resume.setText("Yes")
+
+        layout.addWidget(stats_frame)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        layout.addWidget(self.progress_bar)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self.cancel_btn = QPushButton("✖ Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+
+    def update_progress(self, percent, speed, size, downloaded_str, eta):
+        self.setWindowTitle(f"{percent}% {self.filename}")
+        self.progress_bar.setValue(percent)
+        self.val_status.setText("Downloading...")
+        self.val_size.setText(size)
+        self.val_downloaded.setText(f"{downloaded_str} ({percent}%)")
+        self.val_rate.setText(speed)
+        self.val_time.setText(eta)
+
+class DownloadCompleteDialog(QDialog):
+    def __init__(self, filename, url, filepath, total_bytes, parent=None):
+        super().__init__(parent)
+        self.filepath = filepath
+        self.setWindowTitle("Download complete")
+        self.resize(550, 240)
+        
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #070F1B;
+                color: #FFFFFF;
+                font-family: "Segoe UI", Arial, sans-serif;
+            }
+            QLabel {
+                font-size: 12px;
+            }
+            QFrame#headerFrame {
+                border: 1px solid #10B981;
+                border-radius: 6px;
+                background-color: #064E3B;
+                padding: 12px;
+            }
+            QFrame#detailsFrame {
+                border: 1px solid #1E3A8A;
+                border-radius: 6px;
+                background-color: #091220;
+                padding: 10px;
+            }
+            QPushButton {
+                background-color: #1E293B;
+                color: #FFFFFF;
+                border: 1px solid #334155;
+                border-radius: 4px;
+                padding: 6px 16px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+            }
+            QPushButton#openBtn {
+                background-color: #0D6EFD;
+                border: 1px solid #0B5ED7;
+            }
+            QPushButton#openBtn:hover {
+                background-color: #0B5ED7;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(12)
+
+        header_frame = QFrame()
+        header_frame.setObjectName("headerFrame")
+        header_layout = QHBoxLayout(header_frame)
+        header_layout.setContentsMargins(10, 5, 10, 5)
+        header_layout.setSpacing(15)
+
+        check_lbl = QLabel("✔")
+        check_lbl.setStyleSheet("color: #10B981; font-size: 32px; font-weight: bold;")
+        
+        text_layout = QVBoxLayout()
+        title_lbl = QLabel("Download complete")
+        title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #10B981;")
+        
+        size_mb = total_bytes / (1024 * 1024) if total_bytes > 0 else 0
+        desc_lbl = QLabel(f"{filename}\nDownloaded {size_mb:.2f} MB ({total_bytes} Bytes)")
+        desc_lbl.setStyleSheet("color: #E2E8F0; font-size: 12px;")
+        desc_lbl.setWordWrap(True)
+        
+        text_layout.addWidget(title_lbl)
+        text_layout.addWidget(desc_lbl)
+        
+        header_layout.addWidget(check_lbl)
+        header_layout.addLayout(text_layout)
+        layout.addWidget(header_frame)
+
+        details_frame = QFrame()
+        details_frame.setObjectName("detailsFrame")
+        details_layout = QFormLayout(details_frame)
+        details_layout.setSpacing(8)
+
+        lbl_addr = QLabel("Address")
+        lbl_addr.setStyleSheet("color: #5D9CEC; font-weight: bold;")
+        val_addr = QLabel(url)
+        val_addr.setStyleSheet("color: #FFFFFF;")
+        val_addr.setWordWrap(True)
+        details_layout.addRow(lbl_addr, val_addr)
+
+        lbl_saved = QLabel("Saved file")
+        lbl_saved.setStyleSheet("color: #5D9CEC; font-weight: bold;")
+        val_saved = QLabel(filepath)
+        val_saved.setStyleSheet("color: #FFFFFF;")
+        val_saved.setWordWrap(True)
+        details_layout.addRow(lbl_saved, val_saved)
+
+        layout.addWidget(details_frame)
+
+        btn_layout = QHBoxLayout()
+        
+        self.open_btn = QPushButton("▶ Open")
+        self.open_btn.setObjectName("openBtn")
+        self.open_folder_btn = QPushButton("📁 Open folder")
+        self.close_btn = QPushButton("✖ Close")
+
+        self.open_btn.clicked.connect(self.open_file)
+        self.open_folder_btn.clicked.connect(self.open_folder)
+        self.close_btn.clicked.connect(self.accept)
+
+        btn_layout.addWidget(self.open_btn)
+        btn_layout.addWidget(self.open_folder_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.close_btn)
+        layout.addLayout(btn_layout)
+
+    def open_file(self):
+        try:
+            if os.path.exists(self.filepath):
+                os.startfile(self.filepath)
+        except Exception as e:
+            print("Failed to open file:", e)
+
+    def open_folder(self):
+        try:
+            if os.path.exists(self.filepath):
+                os.system(f'explorer /select,"{os.path.abspath(self.filepath)}"')
+            else:
+                dir_path = os.path.dirname(self.filepath)
+                if os.path.exists(dir_path):
+                    os.startfile(dir_path)
+        except Exception as e:
+            print("Failed to open folder:", e)
 
 class MiniDownloadPro(QMainWindow):
     def __init__(self):
@@ -303,6 +622,7 @@ class MiniDownloadPro(QMainWindow):
         self.thread_pool = QThreadPool()
         self.active_workers = {}
         self.url_metadata = {}
+        self.progress_dialogs = {}
         self.allow_quit = False
         
         self.initUI()
@@ -1180,6 +1500,7 @@ class MiniDownloadPro(QMainWindow):
 
         self.download_signals = WorkerSignals()
         self.download_signals.progress.connect(self.update_row_progress)
+        self.download_signals.progress_detailed.connect(self.update_dialog_progress)
         self.download_signals.status.connect(self.update_row_status)
         self.download_signals.finished.connect(self.on_worker_finished)
 
@@ -1189,13 +1510,80 @@ class MiniDownloadPro(QMainWindow):
             if status.lower() in ['pending', 'ready', 'failed', 'scan error']:
                 url = self.table.item(r, 4).text()
                 meta = self.url_metadata.get(url, {})
+                
+                # Manual download fallback setup
+                if 'title' not in meta:
+                    default_name = "Download_from_Link"
+                    try:
+                        from urllib.parse import urlparse
+                        path = urlparse(url).path
+                        parsed_filename = os.path.basename(path)
+                        if parsed_filename:
+                            default_name = parsed_filename
+                    except:
+                        pass
+                    
+                    base, ext = os.path.splitext(default_name)
+                    if format_type == "MP3 (Audio Only)" and ext.lower() != ".mp3":
+                        default_name = base + ".mp3"
+                    elif format_type == "MP4 (Video)" and not ext:
+                        default_name = base + ".mp4"
+                        
+                    default_filepath = os.path.join(save_dir, default_name)
+                    description = f"{default_name} | Cookie: browser"
+                    
+                    dialog = DownloadInfoDialog(url, f"{format_type} ({quality})", default_filepath, description, self)
+                    result = dialog.exec_()
+                    if result == 0: # Cancel
+                        continue
+                        
+                    dialog_data = dialog.get_result()
+                    custom_filepath = dialog_data['filepath']
+                    custom_save_dir, custom_filename = os.path.split(custom_filepath)
+                    show_completed_msg = dialog_data['show_completed_msg']
+                    
+                    meta = {
+                        'format_type': format_type,
+                        'quality': quality,
+                        'save_dir': custom_save_dir,
+                        'title': custom_filename,
+                        'show_completed_msg': show_completed_msg
+                    }
+                    self.url_metadata[url] = meta
+                    self.table.item(r, 0).setText(custom_filename)
+                
                 row_format = meta.get('format_type', format_type)
                 row_quality = meta.get('quality', quality)
                 row_save_dir = meta.get('save_dir', save_dir)
                 custom_filename = meta.get('title', None)
+                
+                # Show non-modal Progress dialog
+                dialog = DownloadProgressDialog(custom_filename or "Download", url, self)
+                self.progress_dialogs[r] = dialog
+                dialog.rejected.connect(lambda row=r: self.cancel_row_download(row))
+                dialog.show()
+
                 worker = DownloadWorker(r, url, row_save_dir, row_format, row_quality, naming_opts, extras_opts, self.download_signals, custom_filename=custom_filename)
                 self.active_workers[r] = worker
                 self.thread_pool.start(worker)
+
+    def cancel_row_download(self, row_idx):
+        if row_idx in self.active_workers:
+            self.active_workers[row_idx]._is_cancelled = True
+            self.update_row_status(row_idx, "", "Failed")
+            if row_idx in self.progress_dialogs:
+                self.progress_dialogs[row_idx].close()
+                del self.progress_dialogs[row_idx]
+
+    def update_dialog_progress(self, row_idx, data):
+        if row_idx in self.progress_dialogs:
+            self.progress_dialogs[row_idx].update_progress(
+                data['percent'],
+                data['speed'],
+                data['size'],
+                data['downloaded_str'],
+                data['eta']
+            )
 
     def on_worker_finished(self, row_idx, success, message):
         if row_idx in self.active_workers:
@@ -1204,6 +1592,27 @@ class MiniDownloadPro(QMainWindow):
         status = "done" if success else "failed"
         self.update_row_status(row_idx, "", status)
         
+        # Close progress dialog and show completion dialog
+        if row_idx in self.progress_dialogs:
+            self.progress_dialogs[row_idx].close()
+            
+            if success:
+                url = self.table.item(row_idx, 4).text()
+                meta = self.url_metadata.get(url, {})
+                show_msg = meta.get('show_completed_msg', True)
+                
+                if show_msg:
+                    filepath = message
+                    filename = os.path.basename(filepath)
+                    total_bytes = 0
+                    if os.path.exists(filepath):
+                        total_bytes = os.path.getsize(filepath)
+                        
+                    comp_dialog = DownloadCompleteDialog(filename, url, filepath, total_bytes, self)
+                    comp_dialog.exec_()
+            
+            del self.progress_dialogs[row_idx]
+            
         if not success and message != "Cancelled":
             # Append error trace to cells
             self.table.item(row_idx, 0).setToolTip(message)
@@ -1215,6 +1624,9 @@ class MiniDownloadPro(QMainWindow):
         for row_idx, worker in list(self.active_workers.items()):
             worker._is_cancelled = True
             self.update_row_status(row_idx, "", "Failed")
+            if row_idx in self.progress_dialogs:
+                self.progress_dialogs[row_idx].close()
+                del self.progress_dialogs[row_idx]
         self.active_workers.clear()
         self.update_status_label()
 
