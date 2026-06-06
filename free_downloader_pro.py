@@ -84,16 +84,16 @@ class DownloadWorker(QRunnable):
         extracted_ffmpeg = r"c:\Users\K-VeaSna\Desktop\Mini Download 5.4.1 full\Mini Download 5.4.1 full.exe_extracted\ffmpeg.exe"
         
         # Configure output template
-        name_prefix = ""
-        if self.naming_opts.get('number', False):
-            name_prefix = f"{self.row_idx + 1} - "
-            
         if self.naming_opts.get('title_id', False):
-            out_name = f"{name_prefix}%(title)s - %(id)s.%(ext)s"
+            out_name = "%(title)s - %(id)s.%(ext)s"
         elif self.naming_opts.get('id_only', False):
-            out_name = f"{name_prefix}%(id)s.%(ext)s"
+            out_name = "%(id)s.%(ext)s"
+        elif self.naming_opts.get('number_only', False):
+            out_name = f"{self.row_idx + 1}.%(ext)s"
+        elif self.naming_opts.get('num_title', False):
+            out_name = f"{self.row_idx + 1} - %(title)s.%(ext)s"
         else: # title_only (default)
-            out_name = f"{name_prefix}%(title)s.%(ext)s"
+            out_name = "%(title)s.%(ext)s"
             
         ydl_opts = {
             'outtmpl': os.path.join(self.save_dir, out_name),
@@ -334,6 +334,10 @@ class MiniDownloadPro(QMainWindow):
         
         # Save Naming
         naming_layout = QHBoxLayout()
+        save_name_label = QLabel("Save name:")
+        save_name_label.setFixedWidth(80)
+        naming_layout.addWidget(save_name_label)
+        
         self.name_title_chk = QCheckBox("Title")
         self.name_title_chk.setChecked(True)
         self.name_title_chk.clicked.connect(lambda: self.uncheck_others('title'))
@@ -345,17 +349,28 @@ class MiniDownloadPro(QMainWindow):
         self.name_id_chk.clicked.connect(lambda: self.uncheck_others('id'))
         
         self.name_num_chk = QCheckBox("Number")
+        self.name_num_chk.clicked.connect(lambda: self.uncheck_others('number'))
+        
+        self.name_num_title_chk = QCheckBox("Number+Title")
+        self.name_num_title_chk.clicked.connect(lambda: self.uncheck_others('num_title'))
         
         naming_layout.addWidget(self.name_title_chk)
         naming_layout.addWidget(self.name_title_id_chk)
         naming_layout.addWidget(self.name_id_chk)
         naming_layout.addWidget(self.name_num_chk)
+        naming_layout.addWidget(self.name_num_title_chk)
+        naming_layout.addStretch()
         out_layout.addLayout(naming_layout)
         
         # Extras
         extras_layout = QHBoxLayout()
-        self.extra_thumb_chk = QCheckBox("Thumbnail")
-        self.extra_desc_chk = QCheckBox("Description")
+        extras_label = QLabel("Extras :")
+        extras_label.setFixedWidth(80)
+        extras_layout.addWidget(extras_label)
+        
+        self.extra_thumb_chk = QCheckBox("🖼️ Thumbnail")
+        self.extra_desc_chk = QCheckBox("📝 Description")
+        
         extras_layout.addWidget(self.extra_thumb_chk)
         extras_layout.addWidget(self.extra_desc_chk)
         extras_layout.addStretch()
@@ -467,6 +482,8 @@ class MiniDownloadPro(QMainWindow):
         self.name_title_chk.setChecked(active == 'title')
         self.name_title_id_chk.setChecked(active == 'title_id')
         self.name_id_chk.setChecked(active == 'id')
+        self.name_num_chk.setChecked(active == 'number')
+        self.name_num_title_chk.setChecked(active == 'num_title')
 
     def format_changed(self, index):
         self.quality_combo.setEnabled(index == 0)
@@ -619,7 +636,8 @@ class MiniDownloadPro(QMainWindow):
         naming_opts = {
             'title_id': self.name_title_id_chk.isChecked(),
             'id_only': self.name_id_chk.isChecked(),
-            'number': self.name_num_chk.isChecked(),
+            'number_only': self.name_num_chk.isChecked(),
+            'num_title': self.name_num_title_chk.isChecked(),
         }
         
         # Extras Options
