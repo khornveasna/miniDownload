@@ -126,12 +126,11 @@ class DownloadWorker(QRunnable):
                 'preferredquality': '192',
             })
         else: # MP4
-            if self.quality == "1080p":
-                ydl_opts['format'] = 'bestvideo[height<=1080]+bestaudio/best'
-            elif self.quality == "720p":
-                ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best'
-            elif self.quality == "480p":
-                ydl_opts['format'] = 'bestvideo[height<=480]+bestaudio/best'
+            import re
+            match = re.search(r'\d+', self.quality)
+            if match:
+                height = match.group()
+                ydl_opts['format'] = f'bestvideo[height<={height}]+bestaudio/best'
             else: # best
                 ydl_opts['format'] = 'bestvideo+bestaudio/best'
 
@@ -369,7 +368,18 @@ class MiniDownloadPro(QMainWindow):
         self.format_combo.currentIndexChanged.connect(self.format_changed)
         
         self.quality_combo = QComboBox()
-        self.quality_combo.addItems(["1080", "720", "480", "Best"])
+        self.quality_combo.addItems([
+            "Quality: 2160",
+            "Quality: 1440",
+            "Quality: 1080",
+            "Quality: 720",
+            "Quality: 480",
+            "Quality: 360",
+            "Quality: 240",
+            "Best Quality"
+        ])
+        # Set default selection to Quality: 1080
+        self.quality_combo.setCurrentIndex(2)
         
         fmt_q_layout.addWidget(QLabel("Format:"))
         fmt_q_layout.addWidget(self.format_combo)

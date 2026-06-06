@@ -66,12 +66,11 @@ class DownloaderThread(threading.Thread):
                 'preferredquality': '192',
             }]
         else: # Video
-            if self.quality == "1080p (High Quality)":
-                ydl_opts['format'] = 'bestvideo[height<=1080]+bestaudio/best'
-            elif self.quality == "720p (Medium Quality)":
-                ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best'
-            elif self.quality == "480p (Low Quality)":
-                ydl_opts['format'] = 'bestvideo[height<=480]+bestaudio/best'
+            import re
+            match = re.search(r'\d+', self.quality)
+            if match:
+                height = match.group()
+                ydl_opts['format'] = f'bestvideo[height<={height}]+bestaudio/best'
             else:
                 ydl_opts['format'] = 'bestvideo+bestaudio/best'
 
@@ -209,7 +208,18 @@ class ModernDownloader(QMainWindow):
         quality_label_layout = QVBoxLayout()
         quality_label_layout.addWidget(QLabel("Quality:"))
         self.quality_combo = QComboBox()
-        self.quality_combo.addItems(["Best Available", "1080p (High Quality)", "720p (Medium Quality)", "480p (Low Quality)"])
+        self.quality_combo.addItems([
+            "Quality: 2160",
+            "Quality: 1440",
+            "Quality: 1080",
+            "Quality: 720",
+            "Quality: 480",
+            "Quality: 360",
+            "Quality: 240",
+            "Best Quality"
+        ])
+        # Set default selection to Quality: 1080
+        self.quality_combo.setCurrentIndex(2)
         quality_label_layout.addWidget(self.quality_combo)
 
         options_layout.addLayout(format_label_layout, 1)
