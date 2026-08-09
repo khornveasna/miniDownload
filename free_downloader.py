@@ -46,16 +46,19 @@ class DownloaderThread(threading.Thread):
             self.signals.status.emit("Download complete, processing...")
 
     def run(self):
-        # Locate ffmpeg.exe if available in the extracted directory to merge high-quality video/audio
-        extracted_ffmpeg = r"c:\Users\K-VeaSna\Desktop\Mini Download 5.4.1 full\Mini Download 5.4.1 full.exe_extracted\ffmpeg.exe"
+        # Locate ffmpeg.exe dynamically
+        local_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        local_ffmpeg = os.path.join(local_dir, "ffmpeg.exe")
+        import shutil
+        ffmpeg_path = shutil.which("ffmpeg") or local_ffmpeg
         
         ydl_opts = {
             'outtmpl': os.path.join(self.save_dir, '%(title)s.%(ext)s'),
             'progress_hooks': [self.progress_hook],
         }
 
-        if os.path.exists(extracted_ffmpeg):
-            ydl_opts['ffmpeg_location'] = extracted_ffmpeg
+        if os.path.exists(ffmpeg_path):
+            ydl_opts['ffmpeg_location'] = ffmpeg_path
             self.signals.status.emit("Using FFmpeg helper for high quality merges...")
 
         if self.format_type == "Audio Only (MP3)":

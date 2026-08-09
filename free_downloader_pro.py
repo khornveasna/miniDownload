@@ -18,10 +18,13 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QGroupBox, QCheckBox, QSpinBox, QMessageBox, QAbstractItemView,
                              QSystemTrayIcon, QMenu, QAction, QStyle, QDialog, QFormLayout,
                              QFrame, QGridLayout)
-from PyQt5.QtCore import pyqtSignal, QObject, Qt, QRunnable, QThreadPool, QThread
+from PyQt5.QtCore import pyqtSignal, QObject, Qt, QRunnable, QThreadPool, QThread, QTimer
 from PyQt5.QtGui import QFont, QColor, QPalette, QBrush, QIcon
 import yt_dlp
 import curl_cffi
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import os
 import hashlib
@@ -38,23 +41,43 @@ def sanitize_filename(filename):
     return clean_base + ext
 
 def get_hwid():
+    # 1. Try wmic csproduct
     try:
-        output = subprocess.check_output('wmic csproduct get uuid', shell=True).decode().strip()
+        output = subprocess.check_output('wmic csproduct get uuid', shell=True, stderr=subprocess.DEVNULL).decode().strip()
         lines = [line.strip() for line in output.split('\n') if line.strip()]
         if len(lines) > 1:
             hwid = lines[1]
             if hwid and hwid != "00000000-0000-0000-0000-000000000000":
                 return hwid
-    except Exception as e:
-        print("Failed to get Motherboard UUID:", e)
-        
+    except Exception:
+        pass
+
+    # 2. Try PowerShell Get-CimInstance (Windows 11 fallback)
     try:
-        output = subprocess.check_output('wmic cpu get processorid', shell=True).decode().strip()
+        cmd = 'powershell -NoProfile -Command "(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID"'
+        output = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+        if output and output != "00000000-0000-0000-0000-000000000000":
+            return output
+    except Exception:
+        pass
+
+    # 3. Try wmic cpu
+    try:
+        output = subprocess.check_output('wmic cpu get processorid', shell=True, stderr=subprocess.DEVNULL).decode().strip()
         lines = [line.strip() for line in output.split('\n') if line.strip()]
         if len(lines) > 1:
             return "CPU-" + lines[1]
-    except Exception as e:
-        print("Failed to get CPU ID:", e)
+    except Exception:
+        pass
+
+    # 4. Try PowerShell CPU ProcessorId
+    try:
+        cmd = 'powershell -NoProfile -Command "(Get-CimInstance -ClassName Win32_Processor).ProcessorId"'
+        output = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+        if output:
+            return "CPU-" + output.split()[0]
+    except Exception:
+        pass
 
     import uuid
     return "MAC-" + str(uuid.getnode())
@@ -385,8 +408,334 @@ class ScanWorker(QRunnable):
         except Exception as e:
             self.signals.status.emit(self.row_idx, "Scan failed", "Scan Error")
 
+def get_category_subfolder(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv', '.m4v']:
+        return "Videos"
+    elif ext in ['.mp3', '.wav', '.aac', '.flac', '.m4a', '.ogg', '.wma']:
+        return "Music"
+    elif ext in ['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.txt', '.csv']:
+        return "Documents"
+    elif ext in ['.exe', '.msi', '.apk', '.dmg', '.iso']:
+        return "Programs"
+    elif ext in ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2']:
+        return "Compressed"
+    return ""
+
+def is_direct_url(url):
+    try:
+        parsed = urllib.parse.urlparse(url)
+        domain = parsed.netloc.lower()
+        path = parsed.path.lower()
+    except Exception:
+        return False
+
+    streaming_domains = [
+        'youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'fb.watch',
+        'vimeo.com', 'instagram.com', 'twitter.com', 'x.com', 'bilibili.com'
+    ]
+    if any(sd in domain for sd in streaming_domains):
+        return False
+
+    direct_extensions = [
+        '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.iso', '.exe', '.msi',
+        '.apk', '.dmg', '.pdf', '.docx', '.xlsx', '.pptx', '.mp4', '.mp3',
+        '.mkv', '.avi', '.flv', '.mov', '.png', '.jpg', '.jpeg', '.gif'
+    ]
+    if any(path.endswith(ext) for ext in direct_extensions):
+        return True
+
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}, method='HEAD')
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            content_type = resp.headers.get('Content-Type', '').lower()
+            if content_type and 'text/html' not in content_type and 'text/plain' not in content_type:
+                return True
+    except Exception:
+        pass
+
+    return False
+
+class MultiSegmentHTTPDownloader:
+    def __init__(self, url, save_filepath, num_threads, signals, row_idx, check_cancelled_fn):
+        self.url = url
+        self.save_filepath = save_filepath
+        self.num_threads = max(1, min(num_threads, 16))
+        self.signals = signals
+        self.row_idx = row_idx
+        self.check_cancelled_fn = check_cancelled_fn
+        self.meta_filepath = save_filepath + ".meta.json"
+
+    def download(self):
+        import time
+
+        filename = os.path.basename(self.save_filepath)
+        target_dir = os.path.dirname(self.save_filepath)
+        cat_folder = get_category_subfolder(filename)
+        if cat_folder:
+            cat_dir = os.path.join(target_dir, cat_folder)
+            os.makedirs(cat_dir, exist_ok=True)
+            self.save_filepath = os.path.join(cat_dir, filename)
+            self.meta_filepath = self.save_filepath + ".meta.json"
+
+        total_size = 0
+        accept_ranges = False
+        try:
+            req_head = urllib.request.Request(self.url, headers={'User-Agent': 'Mozilla/5.0'}, method='HEAD')
+            with urllib.request.urlopen(req_head, timeout=10) as resp:
+                total_size = int(resp.headers.get('Content-Length', 0))
+                accept_ranges = 'bytes' in resp.headers.get('Accept-Ranges', '').lower()
+        except Exception:
+            pass
+
+        if total_size == 0:
+            try:
+                req_get = urllib.request.Request(self.url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req_get, timeout=10) as resp:
+                    total_size = int(resp.headers.get('Content-Length', 0))
+                    accept_ranges = 'bytes' in resp.headers.get('Accept-Ranges', '').lower()
+            except Exception:
+                pass
+
+        state = self.load_state()
+        if not state:
+            if accept_ranges and total_size > 1024 * 1024 and self.num_threads > 1:
+                chunk_size = total_size // self.num_threads
+                chunks = []
+                for i in range(self.num_threads):
+                    start = i * chunk_size
+                    end = (total_size - 1) if i == self.num_threads - 1 else (start + chunk_size - 1)
+                    chunks.append({
+                        'id': i,
+                        'start': start,
+                        'end': end,
+                        'downloaded': 0,
+                        'completed': False
+                    })
+                state = {
+                    'url': self.url,
+                    'total_size': total_size,
+                    'accept_ranges': True,
+                    'chunks': chunks
+                }
+            else:
+                state = {
+                    'url': self.url,
+                    'total_size': total_size,
+                    'accept_ranges': False,
+                    'chunks': [{
+                        'id': 0,
+                        'start': 0,
+                        'end': total_size - 1 if total_size > 0 else -1,
+                        'downloaded': 0,
+                        'completed': False
+                    }]
+                }
+            self.save_state(state)
+
+        if state.get('accept_ranges', False) and len(state['chunks']) > 1:
+            self.download_multisegment(state)
+        else:
+            self.download_single_stream(state)
+
+        if all(c['completed'] for c in state['chunks']):
+            self.combine_chunks(state)
+            if os.path.exists(self.meta_filepath):
+                try:
+                    os.remove(self.meta_filepath)
+                except Exception:
+                    pass
+            return self.save_filepath
+        else:
+            raise Exception("Cancelled")
+
+    def load_state(self):
+        if os.path.exists(self.meta_filepath):
+            try:
+                with open(self.meta_filepath, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return None
+
+    def save_state(self, state):
+        try:
+            with open(self.meta_filepath, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=2)
+        except Exception:
+            pass
+
+    def download_multisegment(self, state):
+        import time
+
+        chunks = state['chunks']
+        total_size = state['total_size']
+        lock = threading.Lock()
+        start_time = time.time()
+
+        for chunk in chunks:
+            part_path = self.save_filepath + f".part{chunk['id']}"
+            if os.path.exists(part_path):
+                chunk['downloaded'] = os.path.getsize(part_path)
+                if chunk['downloaded'] >= (chunk['end'] - chunk['start'] + 1):
+                    chunk['completed'] = True
+
+        initial_downloaded = sum(c['downloaded'] for c in chunks)
+
+        def download_chunk(chunk):
+            part_path = self.save_filepath + f".part{chunk['id']}"
+            existing_bytes = 0
+            if os.path.exists(part_path):
+                existing_bytes = os.path.getsize(part_path)
+
+            chunk['downloaded'] = existing_bytes
+            if existing_bytes >= (chunk['end'] - chunk['start'] + 1):
+                chunk['completed'] = True
+                return
+
+            req_start = chunk['start'] + existing_bytes
+            req_end = chunk['end']
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0',
+                'Range': f'bytes={req_start}-{req_end}'
+            }
+
+            retries = 3
+            for attempt in range(retries):
+                if self.check_cancelled_fn():
+                    return
+                try:
+                    req = urllib.request.Request(self.url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=15) as resp, open(part_path, 'ab') as out_f:
+                        while not self.check_cancelled_fn():
+                            buffer = resp.read(64 * 1024)
+                            if not buffer:
+                                break
+                            out_f.write(buffer)
+                            out_f.flush()
+                            with lock:
+                                chunk['downloaded'] += len(buffer)
+                                current_total = sum(c['downloaded'] for c in chunks)
+                                elapsed = time.time() - start_time
+                                speed_bps = (current_total - initial_downloaded) / elapsed if elapsed > 0 else 0
+                                speed_str = f"{speed_bps / (1024 * 1024):.2f} MiB/s"
+                                percent = int((current_total / total_size) * 100) if total_size > 0 else 0
+                                downloaded_str = f"{current_total / (1024 * 1024):.2f} MiB"
+                                size_str = f"{total_size / (1024 * 1024):.2f} MiB" if total_size > 0 else "N/A"
+                                eta_secs = (total_size - current_total) / speed_bps if speed_bps > 0 else 0
+                                eta_str = f"{int(eta_secs)}s" if eta_secs > 0 else "N/A"
+
+                                self.signals.progress_detailed.emit(self.row_idx, {
+                                    'percent': percent,
+                                    'speed': speed_str,
+                                    'size': size_str,
+                                    'downloaded_str': downloaded_str,
+                                    'eta': eta_str
+                                })
+                                self.signals.progress.emit(self.row_idx, percent, speed_str, size_str)
+
+                    if chunk['downloaded'] >= (chunk['end'] - chunk['start'] + 1):
+                        chunk['completed'] = True
+                        break
+                except Exception as e:
+                    if attempt == retries - 1:
+                        raise e
+                    time.sleep(1)
+
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 16)) as executor:
+            futures = [executor.submit(download_chunk, c) for c in chunks if not c['completed']]
+            for future in as_completed(futures):
+                if self.check_cancelled_fn():
+                    self.save_state(state)
+                    return
+                future.result()
+
+        self.save_state(state)
+
+    def download_single_stream(self, state):
+        import time
+
+        part_path = self.save_filepath + ".part"
+        existing_bytes = 0
+        if os.path.exists(part_path):
+            existing_bytes = os.path.getsize(part_path)
+
+        chunk = state['chunks'][0]
+        chunk['downloaded'] = existing_bytes
+        total_size = state['total_size']
+
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        if existing_bytes > 0:
+            headers['Range'] = f'bytes={existing_bytes}-'
+
+        start_time = time.time()
+
+        retries = 3
+        for attempt in range(retries):
+            if self.check_cancelled_fn():
+                return
+            try:
+                req = urllib.request.Request(self.url, headers=headers)
+                with urllib.request.urlopen(req, timeout=15) as resp, open(part_path, 'ab') as out_f:
+                    while not self.check_cancelled_fn():
+                        buffer = resp.read(64 * 1024)
+                        if not buffer:
+                            break
+                        out_f.write(buffer)
+                        out_f.flush()
+                        chunk['downloaded'] += len(buffer)
+                        current_total = chunk['downloaded']
+                        elapsed = time.time() - start_time
+                        speed_bps = (current_total - existing_bytes) / elapsed if elapsed > 0 else 0
+                        speed_str = f"{speed_bps / (1024 * 1024):.2f} MiB/s"
+                        percent = int((current_total / total_size) * 100) if total_size > 0 else 0
+                        downloaded_str = f"{current_total / (1024 * 1024):.2f} MiB"
+                        size_str = f"{total_size / (1024 * 1024):.2f} MiB" if total_size > 0 else "N/A"
+
+                        self.signals.progress_detailed.emit(self.row_idx, {
+                            'percent': percent,
+                            'speed': speed_str,
+                            'size': size_str,
+                            'downloaded_str': downloaded_str,
+                            'eta': 'N/A'
+                        })
+                        self.signals.progress.emit(self.row_idx, percent, speed_str, size_str)
+
+                chunk['completed'] = True
+                break
+            except Exception as e:
+                if attempt == retries - 1:
+                    raise e
+                time.sleep(1)
+
+        self.save_state(state)
+
+    def combine_chunks(self, state):
+        if len(state['chunks']) > 1:
+            with open(self.save_filepath, 'wb') as final_f:
+                for c in state['chunks']:
+                    part_path = self.save_filepath + f".part{c['id']}"
+                    if os.path.exists(part_path):
+                        with open(part_path, 'rb') as pf:
+                            import shutil
+                            shutil.copyfileobj(pf, final_f)
+                        try:
+                            os.remove(part_path)
+                        except Exception:
+                            pass
+        else:
+            part_path = self.save_filepath + ".part"
+            if os.path.exists(part_path):
+                if os.path.exists(self.save_filepath):
+                    try:
+                        os.remove(self.save_filepath)
+                    except Exception:
+                        pass
+                os.rename(part_path, self.save_filepath)
+
 class DownloadWorker(QRunnable):
-    def __init__(self, row_idx, url, save_dir, format_type, quality, naming_opts, extras_opts, signals, custom_filename=None):
+    def __init__(self, row_idx, url, save_dir, format_type, quality, naming_opts, extras_opts, signals, custom_filename=None, num_threads=8):
         super().__init__()
         self.row_idx = row_idx
         self.url = url
@@ -398,6 +747,7 @@ class DownloadWorker(QRunnable):
         self.signals = signals
         self._is_cancelled = False
         self.custom_filename = custom_filename
+        self.num_threads = num_threads
 
     def progress_hook(self, d):
         if self._is_cancelled:
@@ -436,18 +786,39 @@ class DownloadWorker(QRunnable):
     def run(self):
         self.signals.status.emit(self.row_idx, "", "Downloading")
         
-        # Determine ffmpeg.exe path robustly
+        # Fast path for Direct Files (ZIP, EXE, PDF, MP4 direct link, etc.)
+        if is_direct_url(self.url):
+            try:
+                filename = self.custom_filename or os.path.basename(urllib.parse.urlparse(self.url).path) or "downloaded_file"
+                filename = sanitize_filename(filename)
+                save_filepath = os.path.join(self.save_dir, filename)
+
+                downloader = MultiSegmentHTTPDownloader(
+                    url=self.url,
+                    save_filepath=save_filepath,
+                    num_threads=self.num_threads,
+                    signals=self.signals,
+                    row_idx=self.row_idx,
+                    check_cancelled_fn=lambda: self._is_cancelled
+                )
+                final_filepath = downloader.download()
+                title = os.path.basename(final_filepath)
+                self.signals.status.emit(self.row_idx, title, "done")
+                self.signals.finished.emit(self.row_idx, True, final_filepath)
+                return
+            except Exception as e:
+                if self._is_cancelled:
+                    self.signals.finished.emit(self.row_idx, False, "Cancelled")
+                    return
+                # Fallback to yt-dlp if direct segment download errors out
+                pass
+
+        # Determine ffmpeg.exe path robustly (dynamic, no hardcoded developer paths)
         local_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-        local_ffmpeg = os.path.join(local_dir, "ffmpeg.exe")
-        extracted_ffmpeg_54 = r"c:\Users\K-VeaSna\Desktop\Mini Download 5.4.1 full\Mini Download 5.4.1 full.exe_extracted\ffmpeg.exe"
-        extracted_ffmpeg_55 = r"c:\Users\K-VeaSna\Desktop\Mini Download 5.4.1 full\Mini Download 5.5 full.exe_extracted\ffmpeg.exe"
-        
-        if os.path.exists(local_ffmpeg):
-            ffmpeg_path = local_ffmpeg
-        elif os.path.exists(extracted_ffmpeg_55):
-            ffmpeg_path = extracted_ffmpeg_55
-        else:
-            ffmpeg_path = extracted_ffmpeg_54
+        ffmpeg_path = os.path.join(local_dir, "ffmpeg.exe")
+        if not os.path.exists(ffmpeg_path):
+            import shutil
+            ffmpeg_path = shutil.which("ffmpeg") or ffmpeg_path
         
         # Configure output template
         if self.custom_filename:
@@ -941,6 +1312,36 @@ class MiniDownloadPro(QMainWindow):
         self.start_extension_server()
         self.start_ytdlp_update_check()
         
+        # Clipboard Auto-Monitor
+        self.last_clipboard_text = ""
+        self.clipboard_timer = QTimer(self)
+        self.clipboard_timer.setInterval(1500)
+        self.clipboard_timer.timeout.connect(self.check_clipboard)
+        self.clipboard_timer.start()
+
+    def check_clipboard(self):
+        try:
+            clipboard = QApplication.clipboard()
+            text = clipboard.text().strip()
+            if text and text != self.last_clipboard_text and text.startswith(('http://', 'https://')):
+                self.last_clipboard_text = text
+                if any(domain in text for domain in ['youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com']) or is_direct_url(text):
+                    current = self.links_input.toPlainText()
+                    if text not in current:
+                        if current.strip():
+                            self.links_input.appendPlainText(text)
+                        else:
+                            self.links_input.setPlainText(text)
+                        if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+                            self.tray_icon.showMessage(
+                                "Mini Download",
+                                f"Detected media link in clipboard:\n{text[:50]}...",
+                                QSystemTrayIcon.Information,
+                                2000
+                            )
+        except Exception:
+            pass
+        
     def start_ytdlp_update_check(self):
         try:
             current_version = yt_dlp.version.__version__
@@ -982,6 +1383,47 @@ class MiniDownloadPro(QMainWindow):
                 QPushButton:hover { background-color: #388E3C; }
             """)
         msg.exec_()
+
+    def install_browser_extension(self):
+        local_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        ext_folder = os.path.join(local_dir, "Mini_extension")
+        if not os.path.exists(ext_folder):
+            QMessageBox.warning(self, "Extension Not Found", f"Extension folder not found at:\n{ext_folder}")
+            return
+
+        import winreg, hashlib
+        h = hashlib.md5(b"MiniDownloadExtension2026").hexdigest()[:32]
+        chars = "abcdefghijklmnop"
+        ext_id = "".join(chars[int(c, 16)] for c in h)
+
+        success_sites = []
+        try:
+            key_path = rf"Software\Google\Chrome\Extensions\{ext_id}"
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as k:
+                winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, os.path.abspath(ext_folder))
+                winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
+                success_sites.append("Google Chrome")
+        except Exception as e:
+            print("Chrome reg error:", e)
+
+        try:
+            key_path = rf"Software\Microsoft\Edge\Extensions\{ext_id}"
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as k:
+                winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, os.path.abspath(ext_folder))
+                winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
+                success_sites.append("Microsoft Edge")
+        except Exception as e:
+            print("Edge reg error:", e)
+
+        if success_sites:
+            QMessageBox.information(
+                self,
+                "Extension Installed",
+                "Successfully registered Mini Download extension for:\n- " + "\n- ".join(success_sites) +
+                "\n\nPlease restart Chrome/Edge to enable the extension."
+            )
+        else:
+            QMessageBox.warning(self, "Registration Failed", "Could not register registry keys for Chrome/Edge.")
 
     def initUI(self):
         self.setWindowTitle("Mini Download 5.5.1 (Pro Free MT)")
@@ -1431,7 +1873,14 @@ class MiniDownloadPro(QMainWindow):
         close_btn.setObjectName("closeBtn")
         close_btn.clicked.connect(self.close)
         
+        # Extension button with icon
+        ext_btn = QPushButton("🌐 Extension")
+        ext_btn.setObjectName("settingsBtn")
+        ext_btn.setToolTip("Auto-install browser extension into Chrome and Edge")
+        ext_btn.clicked.connect(self.install_browser_extension)
+        
         header_layout.addWidget(settings_btn)
+        header_layout.addWidget(ext_btn)
         header_layout.addWidget(help_btn)
         header_layout.addWidget(self.theme_btn)
         header_layout.addWidget(min_btn)
@@ -1948,7 +2397,7 @@ class MiniDownloadPro(QMainWindow):
                 dialog.rejected.connect(lambda row=r: self.cancel_row_download(row))
                 dialog.show()
 
-                worker = DownloadWorker(r, url, row_save_dir, row_format, row_quality, naming_opts, extras_opts, self.download_signals, custom_filename=custom_filename)
+                worker = DownloadWorker(r, url, row_save_dir, row_format, row_quality, naming_opts, extras_opts, self.download_signals, custom_filename=custom_filename, num_threads=num_threads)
                 self.active_workers[r] = worker
                 self.thread_pool.start(worker)
 
