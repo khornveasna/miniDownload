@@ -43,6 +43,7 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
 
     // Get the base filename
     let cleanName = filename.split(/[\\/]/).pop() || "Download from Browser";
+    cleanName = cleanName.replace(/^\(\d+\+?\)\s*/, '');
 
     // Send it to Mini Download
     try {

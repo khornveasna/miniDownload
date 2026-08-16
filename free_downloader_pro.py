@@ -34,6 +34,10 @@ import sys
 SECRET_SALT = "MiniDownloadSecretSalt2026!"
 
 def sanitize_filename(filename):
+    if not filename:
+        return ""
+    import re
+    filename = re.sub(r'^\(\d+\+?\)\s*', '', filename)
     base, ext = os.path.splitext(filename)
     invalid_chars = '<>:"/\\|?*'
     clean_base = "".join(c if c not in invalid_chars else " " for c in base)
@@ -841,7 +845,8 @@ class DownloadWorker(QRunnable):
             'noprogress': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['default']
+                    'player_client': ['mweb', 'ios', 'android', 'web', 'tv'],
+                    'player_skip': ['configs', 'webpage']
                 }
             }
         }
@@ -849,10 +854,12 @@ class DownloadWorker(QRunnable):
         # Embed thumbnail/description
         if self.extras_opts.get('thumbnail', False):
             ydl_opts['writethumbnail'] = True
-            ydl_opts['postprocessors'] = [{
+            if 'postprocessors' not in ydl_opts:
+                ydl_opts['postprocessors'] = []
+            ydl_opts['postprocessors'].append({
                 'key': 'EmbedThumbnail',
                 'already_have_thumbnail': False,
-            }]
+            })
             
         if self.extras_opts.get('description', False):
             ydl_opts['writedesc'] = True
@@ -875,9 +882,17 @@ class DownloadWorker(QRunnable):
             match = re.search(r'\d+', self.quality)
             if match:
                 height = match.group()
-                ydl_opts['format'] = f'bestvideo[height<={height}]+bestaudio/best'
+                ydl_opts['format'] = f'bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best[ext=mp4]/best'
             else: # best
-                ydl_opts['format'] = 'bestvideo+bestaudio/best'
+                ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best'
+
+            ydl_opts['merge_output_format'] = 'mp4'
+            if 'postprocessors' not in ydl_opts:
+                ydl_opts['postprocessors'] = []
+            ydl_opts['postprocessors'].append({
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            })
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -896,9 +911,31 @@ class DownloadWorker(QRunnable):
                     self.signals.status.emit(self.row_idx, "", "done")
             self.signals.finished.emit(self.row_idx, True, filepath)
         except Exception as e:
+            err_msg = str(e)
+            if "403" in err_msg or "Forbidden" in err_msg or "video data" in err_msg:
+                try:
+                    ydl_opts['cookiesfrombrowser'] = ('chrome', 'edge', 'firefox', 'brave')
+                    ydl_opts['extractor_args'] = {
+                        'youtube': {
+                            'player_client': ['ios', 'android', 'mweb']
+                        }
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(self.url, download=True)
+                        filepath = ydl.prepare_filename(info)
+                        if not os.path.exists(filepath):
+                            base, ext = os.path.splitext(filepath)
+                            for possible_ext in ['.mp4', '.mkv', '.webm', '.mp3', '.m4a']:
+                                if os.path.exists(base + possible_ext):
+                                    filepath = base + possible_ext
+                                    break
+                        self.signals.finished.emit(self.row_idx, True, filepath)
+                        return
+                except Exception as retry_e:
+                    err_msg = str(retry_e)
             import traceback
             traceback.print_exc()
-            self.signals.finished.emit(self.row_idx, False, str(e))
+            self.signals.finished.emit(self.row_idx, False, err_msg)
 
 class DownloadInfoDialog(QDialog):
     def __init__(self, url, format_label, default_filepath, description, parent=None):
@@ -2629,7 +2666,10 @@ class MiniDownloadPro(QMainWindow):
         if not url:
             return
             
+        import re
+        title = re.sub(r'^\(\d+\+?\)\s*', '', title).strip()
         filename = data.get('filename', title)
+        filename = re.sub(r'^\(\d+\+?\)\s*', '', filename).strip()
         if not filename or filename == "Mini Download":
             filename = title
 
@@ -2641,13 +2681,12 @@ class MiniDownloadPro(QMainWindow):
             format_type = "MP3 (Audio Only)"
             quality = "Best Quality"
             base, ext = os.path.splitext(filename)
-            if ext.lower() != ".mp3":
-                filename = base + ".mp3"
+            filename = base + ".mp3"
         elif ext_type == 'original':
             format_type = "MP4 (Video)"
             quality = "Best Quality"
             base, ext = os.path.splitext(filename)
-            if not ext:
+            if not ext or ext.lower() in ['.webm', '.mkv', '.flv']:
                 filename = base + ".mp4"
         else:
             format_type = "MP4 (Video)"
@@ -2656,7 +2695,7 @@ class MiniDownloadPro(QMainWindow):
             else:
                 quality = f"Quality: {ext_quality}"
             base, ext = os.path.splitext(filename)
-            if not ext:
+            if not ext or ext.lower() in ['.webm', '.mkv', '.flv']:
                 filename = base + ".mp4"
 
         filename = sanitize_filename(filename)
