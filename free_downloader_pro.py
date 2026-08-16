@@ -1395,35 +1395,112 @@ class MiniDownloadPro(QMainWindow):
         h = hashlib.md5(b"MiniDownloadExtension2026").hexdigest()[:32]
         chars = "abcdefghijklmnop"
         ext_id = "".join(chars[int(c, 16)] for c in h)
+        abs_ext_path = os.path.abspath(ext_folder)
 
-        success_sites = []
-        try:
-            key_path = rf"Software\Google\Chrome\Extensions\{ext_id}"
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as k:
-                winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, os.path.abspath(ext_folder))
-                winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
-                success_sites.append("Google Chrome")
-        except Exception as e:
-            print("Chrome reg error:", e)
+        # 1. HKCU Keys
+        for reg_path in [rf"Software\Google\Chrome\Extensions\{ext_id}", rf"Software\Microsoft\Edge\Extensions\{ext_id}"]:
+            try:
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, reg_path) as k:
+                    winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, abs_ext_path)
+                    winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
+            except Exception as e:
+                print("REG HKCU error:", e)
 
-        try:
-            key_path = rf"Software\Microsoft\Edge\Extensions\{ext_id}"
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as k:
-                winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, os.path.abspath(ext_folder))
-                winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
-                success_sites.append("Microsoft Edge")
-        except Exception as e:
-            print("Edge reg error:", e)
+        # 2. HKLM Keys
+        for reg_path in [rf"Software\Google\Chrome\Extensions\{ext_id}", rf"Software\Microsoft\Edge\Extensions\{ext_id}"]:
+            try:
+                with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as k:
+                    winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, abs_ext_path)
+                    winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
+            except Exception:
+                pass
 
-        if success_sites:
-            QMessageBox.information(
-                self,
-                "Extension Installed",
-                "Successfully registered Mini Download extension for:\n- " + "\n- ".join(success_sites) +
-                "\n\nPlease restart Chrome/Edge to enable the extension."
-            )
-        else:
-            QMessageBox.warning(self, "Registration Failed", "Could not register registry keys for Chrome/Edge.")
+        # 3. Policy Allowlist Keys
+        for policy_path in [r"Software\Policies\Google\Chrome\ExtensionInstallAllowlist", r"Software\Policies\Microsoft\Edge\ExtensionInstallAllowlist"]:
+            try:
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, policy_path) as k:
+                    winreg.SetValueEx(k, "1", 0, winreg.REG_SZ, ext_id)
+            except Exception:
+                pass
+
+        # 4. External Extensions JSON Descriptors
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        target_dirs = [
+            os.path.join(local_appdata, r"Google\Chrome\User Data\External Extensions"),
+            os.path.join(local_appdata, r"Microsoft\Edge\User Data\External Extensions"),
+            os.path.join(local_appdata, r"BraveSoftware\Brave-Browser\User Data\External Extensions"),
+        ]
+
+        json_data = json.dumps({
+            "external_directory": abs_ext_path,
+            "external_version": "1.0.0"
+        }, indent=2)
+
+        for target_dir in target_dirs:
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+                json_file = os.path.join(target_dir, f"{ext_id}.json")
+                with open(json_file, "w", encoding="utf-8") as f:
+                    f.write(json_data)
+            except Exception as e:
+                print("JSON descriptor error:", e)
+
+        # Launch Extension Helper Dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Mini Download Browser Extension Helper")
+        dialog.resize(560, 340)
+        dialog.setStyleSheet("""
+            QDialog { background-color: #1A1A1A; color: #FFFFFF; font-family: 'Segoe UI', sans-serif; }
+            QLabel { color: #FFFFFF; font-size: 13px; }
+            QPushButton { background-color: #0284C7; color: white; border: none; border-radius: 4px; padding: 8px 16px; font-weight: bold; }
+            QPushButton:hover { background-color: #0369A1; }
+            QPushButton#secBtn { background-color: #333333; color: #FFFFFF; }
+            QLineEdit { background-color: #242424; border: 1px solid #444; color: #38BDF8; padding: 6px; }
+        """)
+
+        lyt = QVBoxLayout(dialog)
+        lyt.setContentsMargins(20, 20, 20, 20)
+        lyt.setSpacing(12)
+
+        t_lbl = QLabel("🌐 Browser Extension Enable Helper")
+        t_lbl.setStyleSheet("font-size: 18px; font-weight: bold; color: #42A85F;")
+        lyt.addWidget(t_lbl)
+
+        d_lbl = QLabel(
+            "Extension registered into Chrome, Edge, and Brave!\n\n"
+            "📌 Step 1: Restart Chrome / Edge / Brave.\n"
+            "📌 Step 2: Click 'Enable Extension' when prompted by the browser.\n"
+            "📌 Step 3: Or click below to open Chrome/Edge extension page or copy folder path:"
+        )
+        d_lbl.setWordWrap(True)
+        lyt.addWidget(d_lbl)
+
+        p_lyt = QHBoxLayout()
+        p_edit = QLineEdit(abs_ext_path)
+        p_edit.setReadOnly(True)
+        c_btn = QPushButton("Copy Path")
+        c_btn.setObjectName("secBtn")
+        c_btn.clicked.connect(lambda: (QApplication.clipboard().setText(abs_ext_path), QMessageBox.information(dialog, "Copied", "Folder path copied!")))
+        p_lyt.addWidget(p_edit)
+        p_lyt.addWidget(c_btn)
+        lyt.addLayout(p_lyt)
+
+        b_lyt = QHBoxLayout()
+        c_btn2 = QPushButton("🌐 Open Chrome Extensions")
+        e_btn2 = QPushButton("🌐 Open Edge Extensions")
+        ok_btn = QPushButton("OK")
+        ok_btn.setObjectName("secBtn")
+
+        c_btn2.clicked.connect(lambda: subprocess.run(f'start chrome --load-extension="{abs_ext_path}" chrome://extensions', shell=True))
+        e_btn2.clicked.connect(lambda: subprocess.run(f'start msedge --load-extension="{abs_ext_path}" edge://extensions', shell=True))
+        ok_btn.clicked.connect(dialog.accept)
+
+        b_lyt.addWidget(c_btn2)
+        b_lyt.addWidget(e_btn2)
+        b_lyt.addWidget(ok_btn)
+        lyt.addLayout(b_lyt)
+
+        dialog.exec_()
 
     def initUI(self):
         self.setWindowTitle("Mini Download 5.5.1 (Pro Free MT)")

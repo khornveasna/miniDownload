@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import winreg
 import hashlib
+import json
 
 from PyQt5.QtWidgets import (QApplication, QDialog, QLabel, QVBoxLayout,
                              QHBoxLayout, QLineEdit, QPushButton, QCheckBox, QProgressBar,
@@ -28,42 +29,55 @@ def register_browser_extension(ext_folder):
     abs_ext_path = os.path.abspath(ext_folder)
     success = False
 
-    # Chrome HKCU
-    try:
-        key_path = rf"Software\Google\Chrome\Extensions\{ext_id}"
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as k:
-            winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, abs_ext_path)
-            winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
+    # 1. Register HKCU Keys for Chrome & Edge
+    for reg_path in [rf"Software\Google\Chrome\Extensions\{ext_id}", rf"Software\Microsoft\Edge\Extensions\{ext_id}"]:
+        try:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, reg_path) as k:
+                winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, abs_ext_path)
+                winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
+                success = True
+        except Exception as e:
+            print("REG HKCU error:", e)
+
+    # 2. Register HKLM Keys for Chrome & Edge
+    for reg_path in [rf"Software\Google\Chrome\Extensions\{ext_id}", rf"Software\Microsoft\Edge\Extensions\{ext_id}"]:
+        try:
+            with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as k:
+                winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, abs_ext_path)
+                winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
+        except Exception:
+            pass
+
+    # 3. Register Policy Allowlist Keys
+    for policy_path in [r"Software\Policies\Google\Chrome\ExtensionInstallAllowlist", r"Software\Policies\Microsoft\Edge\ExtensionInstallAllowlist"]:
+        try:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, policy_path) as k:
+                winreg.SetValueEx(k, "1", 0, winreg.REG_SZ, ext_id)
+        except Exception:
+            pass
+
+    # 4. Drop JSON Descriptors into External Extensions folders for Chrome, Edge, Brave
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    target_dirs = [
+        os.path.join(local_appdata, r"Google\Chrome\User Data\External Extensions"),
+        os.path.join(local_appdata, r"Microsoft\Edge\User Data\External Extensions"),
+        os.path.join(local_appdata, r"BraveSoftware\Brave-Browser\User Data\External Extensions"),
+    ]
+
+    json_data = json.dumps({
+        "external_directory": abs_ext_path,
+        "external_version": "1.0.0"
+    }, indent=2)
+
+    for target_dir in target_dirs:
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            json_file = os.path.join(target_dir, f"{ext_id}.json")
+            with open(json_file, "w", encoding="utf-8") as f:
+                f.write(json_data)
             success = True
-    except Exception as e:
-        print("Chrome HKCU reg error:", e)
-
-    # Edge HKCU
-    try:
-        key_path = rf"Software\Microsoft\Edge\Extensions\{ext_id}"
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as k:
-            winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, abs_ext_path)
-            winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
-            success = True
-    except Exception as e:
-        print("Edge HKCU reg error:", e)
-
-    # Try HKLM
-    try:
-        key_path = rf"Software\Google\Chrome\Extensions\{ext_id}"
-        with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, key_path) as k:
-            winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, abs_ext_path)
-            winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
-    except Exception:
-        pass
-
-    try:
-        key_path = rf"Software\Microsoft\Edge\Extensions\{ext_id}"
-        with winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, key_path) as k:
-            winreg.SetValueEx(k, "path", 0, winreg.REG_SZ, abs_ext_path)
-            winreg.SetValueEx(k, "version", 0, winreg.REG_SZ, "1.0.0")
-    except Exception:
-        pass
+        except Exception as e:
+            print("JSON descriptor error:", e)
 
     return success
 
@@ -84,9 +98,120 @@ def create_desktop_shortcut(target_exe, shortcut_name="Mini Download"):
     except Exception as e:
         print("Shortcut error:", e)
 
+class ExtensionHelperDialog(QDialog):
+    def __init__(self, ext_folder, parent=None):
+        super().__init__(parent)
+        self.ext_folder = os.path.abspath(ext_folder)
+        self.setWindowTitle("Mini Download Browser Extension Helper")
+        self.resize(560, 360)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0F172A;
+                color: #F8FAFC;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            QLabel {
+                color: #E2E8F0;
+                font-size: 13px;
+            }
+            QLabel#titleLabel {
+                font-size: 18px;
+                font-weight: bold;
+                color: #38BDF8;
+            }
+            QPushButton {
+                background-color: #0284C7;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #0369A1;
+            }
+            QPushButton#secondaryBtn {
+                background-color: #334155;
+                color: #F8FAFC;
+            }
+            QPushButton#secondaryBtn:hover {
+                background-color: #475569;
+            }
+            QLineEdit {
+                background-color: #1E293B;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                padding: 6px;
+                color: #38BDF8;
+                font-size: 12px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("🌐 Browser Extension Enable Helper")
+        title.setObjectName("titleLabel")
+        layout.addWidget(title)
+
+        info = QLabel(
+            "Mini Download has registered the extension into Chrome and Edge registry & external directories.\n\n"
+            "📌 Step 1: Restart your Chrome or Edge browser.\n"
+            "📌 Step 2: Click 'Enable extension' when prompted by the browser.\n"
+            "📌 Step 3: If not prompted, click the buttons below to open Chrome/Edge extension page or copy path:"
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        path_layout = QHBoxLayout()
+        self.path_edit = QLineEdit(self.ext_folder)
+        self.path_edit.setReadOnly(True)
+        copy_btn = QPushButton("Copy Path")
+        copy_btn.setObjectName("secondaryBtn")
+        copy_btn.clicked.connect(self.copy_path)
+        path_layout.addWidget(self.path_edit)
+        path_layout.addWidget(copy_btn)
+        layout.addLayout(path_layout)
+
+        btn_layout = QHBoxLayout()
+        open_chrome_btn = QPushButton("🌐 Open Chrome Extensions")
+        open_edge_btn = QPushButton("🌐 Open Edge Extensions")
+        close_btn = QPushButton("OK / Close")
+        close_btn.setObjectName("secondaryBtn")
+
+        open_chrome_btn.clicked.connect(self.open_chrome)
+        open_edge_btn.clicked.connect(self.open_edge)
+        close_btn.clicked.connect(self.accept)
+
+        btn_layout.addWidget(open_chrome_btn)
+        btn_layout.addWidget(open_edge_btn)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+    def copy_path(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.ext_folder)
+        QMessageBox.information(self, "Copied", "Extension folder path copied to clipboard!")
+
+    def open_chrome(self):
+        try:
+            cmd = f'start chrome --load-extension="{self.ext_folder}" chrome://extensions'
+            subprocess.run(cmd, shell=True)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not launch Chrome: {e}")
+
+    def open_edge(self):
+        try:
+            cmd = f'start msedge --load-extension="{self.ext_folder}" edge://extensions'
+            subprocess.run(cmd, shell=True)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not launch Edge: {e}")
+
 class InstallWorker(QThread):
     progress = pyqtSignal(int, str)
-    finished = pyqtSignal(bool, str, str)
+    finished = pyqtSignal(bool, str, str, str)
 
     def __init__(self, install_dir, add_ext, add_shortcut, auto_start):
         super().__init__()
@@ -134,10 +259,10 @@ class InstallWorker(QThread):
                 register_startup(main_exe)
 
             self.progress.emit(100, "Installation Complete!")
-            self.finished.emit(True, "Installation completed successfully!", main_exe)
+            self.finished.emit(True, "Installation completed successfully!", main_exe, ext_folder)
 
         except Exception as e:
-            self.finished.emit(False, str(e), "")
+            self.finished.emit(False, str(e), "", "")
 
 class SetupWizard(QDialog):
     def __init__(self):
@@ -210,7 +335,6 @@ class SetupWizard(QDialog):
         self.main_layout.setContentsMargins(20, 20, 20, 20)
         self.main_layout.setSpacing(15)
 
-        # Header
         header_layout = QHBoxLayout()
         title_lbl = QLabel(f"Mini Download {VERSION} Setup")
         title_lbl.setObjectName("titleLabel")
@@ -227,7 +351,6 @@ class SetupWizard(QDialog):
         line.setStyleSheet("color: #334155;")
         self.main_layout.addWidget(line)
 
-        # Directory Selector
         dir_lbl = QLabel("Installation Directory:")
         self.main_layout.addWidget(dir_lbl)
 
@@ -240,7 +363,6 @@ class SetupWizard(QDialog):
         dir_layout.addWidget(browse_btn)
         self.main_layout.addLayout(dir_layout)
 
-        # Options
         self.chk_ext = QCheckBox("🌐 Automatically install Browser Extension (Google Chrome & Microsoft Edge)")
         self.chk_ext.setChecked(True)
 
@@ -254,7 +376,6 @@ class SetupWizard(QDialog):
         self.main_layout.addWidget(self.chk_shortcut)
         self.main_layout.addWidget(self.chk_startup)
 
-        # Progress
         self.status_lbl = QLabel("Ready to install.")
         self.main_layout.addWidget(self.status_lbl)
 
@@ -264,7 +385,6 @@ class SetupWizard(QDialog):
 
         self.main_layout.addStretch()
 
-        # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -312,17 +432,14 @@ class SetupWizard(QDialog):
         self.progress_bar.setValue(percent)
         self.status_lbl.setText(msg)
 
-    def on_finished(self, success, message, exe_path):
+    def on_finished(self, success, message, exe_path, ext_folder):
         if success:
             self.installed_exe = exe_path
-            QMessageBox.information(
-                self,
-                "Setup Complete",
-                f"🎉 Mini Download has been successfully installed!\n\n"
-                f"- Application installed to: {self.dir_input.text()}\n"
-                f"- Chrome & Edge extensions registered!\n\n"
-                f"Mini Download will now launch."
-            )
+
+            if self.chk_ext.isChecked() and ext_folder and os.path.exists(ext_folder):
+                helper_dialog = ExtensionHelperDialog(ext_folder, self)
+                helper_dialog.exec_()
+
             if exe_path and os.path.exists(exe_path):
                 try:
                     os.startfile(exe_path)
