@@ -103,7 +103,7 @@ class ExtensionHelperDialog(QDialog):
         super().__init__(parent)
         self.ext_folder = os.path.abspath(ext_folder)
         self.setWindowTitle("Mini Download Browser Extension Helper")
-        self.resize(560, 360)
+        self.resize(620, 440)
         self.setStyleSheet("""
             QDialog {
                 background-color: #0F172A;
@@ -124,7 +124,7 @@ class ExtensionHelperDialog(QDialog):
                 color: #FFFFFF;
                 border: none;
                 border-radius: 6px;
-                padding: 8px 16px;
+                padding: 10px 16px;
                 font-weight: bold;
                 font-size: 13px;
             }
@@ -138,6 +138,13 @@ class ExtensionHelperDialog(QDialog):
             QPushButton#secondaryBtn:hover {
                 background-color: #475569;
             }
+            QPushButton#highlightBtn {
+                background-color: #10B981;
+                color: #FFFFFF;
+            }
+            QPushButton#highlightBtn:hover {
+                background-color: #059669;
+            }
             QLineEdit {
                 background-color: #1E293B;
                 border: 1px solid #334155;
@@ -150,17 +157,18 @@ class ExtensionHelperDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
 
-        title = QLabel("🌐 Browser Extension Enable Helper")
+        title = QLabel("🌐 Install Browser Extension to Chrome / Edge")
         title.setObjectName("titleLabel")
         layout.addWidget(title)
 
         info = QLabel(
-            "Mini Download has registered the extension into Chrome and Edge registry & external directories.\n\n"
-            "📌 Step 1: Restart your Chrome or Edge browser.\n"
-            "📌 Step 2: Click 'Enable extension' when prompted by the browser.\n"
-            "📌 Step 3: If not prompted, click the buttons below to open Chrome/Edge extension page or copy path:"
+            "ដើម្បីដំឡើង Extension ចូល Chrome / Edge អោយឃើញភ្លាមៗ សូមជ្រើសរើសវិធីងាយៗខាងក្រោម ៖\n\n"
+            "✨ <b>វិធីទី១ (ងាយបំផុត - Drag & Drop):</b><br>"
+            "ចុចប៊ូតុង <b>'📁 បើក Folder ដើម្បី Drag & Drop'</b> រួចអូស (Drag) Folder <b>Mini_extension</b> ទៅទម្លាក់ (Drop) លើទំព័រ Chrome Extensions!<br><br>"
+            "⚡ <b>វិធីទី២ (Load Unpacked):</b><br>"
+            "ចុចប៊ូតុង <b>'Load unpacked'</b> នៅលើ Chrome (ជ្រុងខាងឆ្វេងលើ) រួច Paste ផ្លូវ Path ខាងក្រោម ៖"
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -168,46 +176,55 @@ class ExtensionHelperDialog(QDialog):
         path_layout = QHBoxLayout()
         self.path_edit = QLineEdit(self.ext_folder)
         self.path_edit.setReadOnly(True)
-        copy_btn = QPushButton("Copy Path")
+        copy_btn = QPushButton("📋 Copy Path")
         copy_btn.setObjectName("secondaryBtn")
         copy_btn.clicked.connect(self.copy_path)
         path_layout.addWidget(self.path_edit)
         path_layout.addWidget(copy_btn)
         layout.addLayout(path_layout)
 
+        # Action Buttons
+        grid_layout = QVBoxLayout()
+        grid_layout.setSpacing(8)
+
+        drag_btn = QPushButton("📁 បើក Folder ដើម្បី Drag & Drop ចូល Chrome")
+        drag_btn.setObjectName("highlightBtn")
+        drag_btn.clicked.connect(self.open_explorer_drag)
+        grid_layout.addWidget(drag_btn)
+
+        restart_chrome_btn = QPushButton("⚡ បិទរួចបើក Chrome ឡើងវិញជាមួយ Extension (Auto-Load)")
+        restart_chrome_btn.clicked.connect(self.restart_chrome_with_ext)
+        grid_layout.addWidget(restart_chrome_btn)
+
+        layout.addLayout(grid_layout)
+
         btn_layout = QHBoxLayout()
-        open_chrome_btn = QPushButton("🌐 Open Chrome Extensions")
-        open_edge_btn = QPushButton("🌐 Open Edge Extensions")
-        close_btn = QPushButton("OK / Close")
+        btn_layout.addStretch()
+        close_btn = QPushButton("OK / បិទ")
         close_btn.setObjectName("secondaryBtn")
-
-        open_chrome_btn.clicked.connect(self.open_chrome)
-        open_edge_btn.clicked.connect(self.open_edge)
         close_btn.clicked.connect(self.accept)
-
-        btn_layout.addWidget(open_chrome_btn)
-        btn_layout.addWidget(open_edge_btn)
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
 
     def copy_path(self):
         clipboard = QApplication.clipboard()
         clipboard.setText(self.ext_folder)
-        QMessageBox.information(self, "Copied", "Extension folder path copied to clipboard!")
+        QMessageBox.information(self, "Copied", "ផ្លូវ Path ត្រូវ​បាន Copy រួចរាល់! អាច Paste ក្នុង Chrome/Edge បាន។")
 
-    def open_chrome(self):
+    def open_explorer_drag(self):
         try:
+            self.copy_path()
+            os.system(f'explorer /select,"{os.path.abspath(self.ext_folder)}"')
+        except Exception as e:
+            print("Explorer error:", e)
+
+    def restart_chrome_with_ext(self):
+        try:
+            subprocess.run("taskkill /f /im chrome.exe", shell=True, capture_output=True)
             cmd = f'start chrome --load-extension="{self.ext_folder}" chrome://extensions'
             subprocess.run(cmd, shell=True)
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Could not launch Chrome: {e}")
-
-    def open_edge(self):
-        try:
-            cmd = f'start msedge --load-extension="{self.ext_folder}" edge://extensions'
-            subprocess.run(cmd, shell=True)
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not launch Edge: {e}")
 
 class InstallWorker(QThread):
     progress = pyqtSignal(int, str)
